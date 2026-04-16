@@ -7,12 +7,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "agromind.db"
 
-AGROINVESTOR_RSS_URL = "https://www.agroinvestor.ru/feed/public-agronews.xml"
-AGRODAY_RSS_URL = "https://agroday.ru/rss/news/"
-AGROBAZAR_HERBS_URL = "https://agrobazar.ru/herb/wholesale/all/moskva_rossiya/"
+AGROBAZAR_URLS = [
+    "https://agrobazar.ru/herb/wholesale/all/",
+]
+
+AGROSERVER_URLS = [
+    "https://agroserver.ru/zelen/",
+]
+
+FRUITINFO_URLS = [
+    "https://fruitinfo.biz/moskva/trade/veget/ukrop",
+    "https://fruitinfo.biz/moskva/trade/veget/luk-zeleniy/sale",
+]
+
+NEWS_FEEDS = (
+    "https://www.agroinvestor.ru/feed/public-agronews.xml",
+    "https://agroday.ru/rss/news/",
+    "https://agri-news.ru/rss.php",
+)
 
 REQUEST_TIMEOUT = 30
-DEFAULT_REGION = "Москва, Россия"
+DEFAULT_REGION = "Россия"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "

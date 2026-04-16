@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from agromind.database import init_db, session_scope
 from agromind.models import News, PriceSummary
 from agromind.parsers.news import fetch_news_from_feeds
-from agromind.parsers.prices import fetch_wholesale_herb_prices
+from agromind.parsers.prices import fetch_all_prices
 
 
 def save_news(session: Session, items: list[dict[str, Any]]) -> int:
@@ -77,7 +77,7 @@ def refresh_data() -> dict[str, Any]:
         result["errors"].append(f"News parsing error: {exc}")
 
     try:
-        price_items = fetch_wholesale_herb_prices()
+        price_items = fetch_all_prices()
     except Exception as exc:
         result["errors"].append(f"Price parsing error: {exc}")
 

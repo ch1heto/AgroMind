@@ -7,17 +7,7 @@ from typing import Any
 
 import feedparser
 
-from agromind.config import (
-    AGRODAY_RSS_URL,
-    AGROINVESTOR_RSS_URL,
-    REQUEST_HEADERS,
-)
-
-
-NEWS_FEEDS = (
-    AGROINVESTOR_RSS_URL,
-    AGRODAY_RSS_URL,
-)
+from agromind.config import NEWS_FEEDS, REQUEST_HEADERS
 
 
 def _normalize_datetime(raw_value: Any) -> datetime | None:
