@@ -16,8 +16,8 @@ AGROSERVER_URLS = [
 ]
 
 FRUITINFO_URLS = [
-    "https://fruitinfo.biz/moskva/trade/veget/ukrop",
-    "https://fruitinfo.biz/moskva/trade/veget/luk-zeleniy/sale",
+    "https://fruitinfo.biz/ru/trade/veget/ukrop",
+    "https://fruitinfo.biz/ru/trade/veget/luk-zeleniy/sale",
 ]
 
 NEWS_FEEDS = (
@@ -27,6 +27,7 @@ NEWS_FEEDS = (
 )
 
 REQUEST_TIMEOUT = 30
+MAX_PAGES = 3
 DEFAULT_REGION = "Россия"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

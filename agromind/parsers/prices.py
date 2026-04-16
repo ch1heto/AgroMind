@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -15,6 +15,7 @@ from agromind.config import (
     AGROSERVER_URLS,
     DEFAULT_REGION,
     FRUITINFO_URLS,
+    MAX_PAGES,
     REQUEST_HEADERS,
     REQUEST_TIMEOUT,
 )
@@ -251,7 +252,7 @@ def _extract_canonical_crop_name(raw_value: str) -> str:
     return normalized
 
 
-def _request_url(url: str) -> Response:
+def _request_url(url: str, *, allow_404: bool = False) -> Response:
     last_error: Exception | None = None
 
     for verify in (True, False):
@@ -263,6 +264,8 @@ def _request_url(url: str) -> Response:
                     timeout=(15, max(REQUEST_TIMEOUT, 60)),
                     verify=verify,
                 )
+                if allow_404 and response.status_code == 404:
+                    return response
                 response.raise_for_status()
                 if not response.encoding or response.encoding.lower() == "iso-8859-1":
                     response.encoding = response.apparent_encoding or response.encoding
@@ -282,6 +285,19 @@ def _request_url(url: str) -> Response:
 
 def _response_text(url: str) -> str:
     return _request_url(url).text
+
+
+def _build_page_url(base_url: str, page: int) -> str:
+    if page <= 1:
+        return base_url
+
+    parsed = urlparse(base_url)
+    query_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query_params["page"] = str(page)
+
+    return urlunparse(
+        parsed._replace(query=urlencode(query_params, doseq=True))
+    )
 
 
 def _deduplicate(items: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -308,27 +324,39 @@ def fetch_wholesale_herb_prices() -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
 
     for url in AGROBAZAR_URLS:
-        soup = BeautifulSoup(_response_text(url), "html.parser")
+        for page in range(1, MAX_PAGES + 1):
+            page_url = _build_page_url(url, page)
+            response = _request_url(page_url, allow_404=True)
+            if response.status_code == 404:
+                break
 
-        for card in soup.select(".pl-item"):
-            if not isinstance(card, Tag):
-                continue
+            soup = BeautifulSoup(response.text, "html.parser")
+            page_items: list[dict[str, object]] = []
 
-            title_element = card.select_one(".pl-title")
-            price_element = card.select_one(".pl-price")
-            date_element = card.select_one(".pl-date")
-            region_element = card.select_one(".pl-sale-place span") or card.select_one(".pl-descr")
+            for card in soup.select(".pl-item"):
+                if not isinstance(card, Tag):
+                    continue
 
-            crop_name = title_element.get_text(" ", strip=True) if title_element else ""
-            price_value = _parse_price(price_element.get_text(" ", strip=True) if price_element else "")
-            published_at = _parse_datetime(
-                date_element.get_text(" ", strip=True) if date_element else ""
-            )
-            region = region_element.get_text(" ", strip=True) if region_element else DEFAULT_REGION
+                title_element = card.select_one(".pl-title")
+                price_element = card.select_one(".pl-price")
+                date_element = card.select_one(".pl-date")
+                region_element = card.select_one(".pl-sale-place span") or card.select_one(".pl-descr")
 
-            item = _build_price_item(crop_name, price_value, published_at, region)
-            if item:
-                results.append(item)
+                crop_name = title_element.get_text(" ", strip=True) if title_element else ""
+                price_value = _parse_price(price_element.get_text(" ", strip=True) if price_element else "")
+                published_at = _parse_datetime(
+                    date_element.get_text(" ", strip=True) if date_element else ""
+                )
+                region = region_element.get_text(" ", strip=True) if region_element else DEFAULT_REGION
+
+                item = _build_price_item(crop_name, price_value, published_at, region)
+                if item:
+                    page_items.append(item)
+
+            if not page_items:
+                break
+
+            results.extend(page_items)
 
     if not results:
         raise RuntimeError("Agrobazar page was loaded, but no herb listings were parsed.")
@@ -340,50 +368,62 @@ def fetch_agroserver_prices() -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
 
     for url in AGROSERVER_URLS:
-        soup = BeautifulSoup(_response_text(url), "html.parser")
+        for page in range(1, MAX_PAGES + 1):
+            page_url = _build_page_url(url, page)
+            response = _request_url(page_url, allow_404=True)
+            if response.status_code == 404:
+                break
 
-        for card in soup.select(".line"):
-            if not isinstance(card, Tag):
-                continue
+            soup = BeautifulSoup(response.text, "html.parser")
+            page_items: list[dict[str, object]] = []
 
-            title_element = card.select_one(".th a")
-            price_element = card.select_one(".price")
-            region_element = card.select_one(".geo")
-            date_element = card.select_one(".date")
-
-            crop_name = title_element.get_text(" ", strip=True) if title_element else ""
-            price_value = _parse_price(price_element.get_text(" ", strip=True) if price_element else "")
-            published_at = _parse_datetime(
-                date_element.get_text(" ", strip=True) if date_element else ""
-            )
-            region = region_element.get_text(" ", strip=True) if region_element else DEFAULT_REGION
-
-            item = _build_price_item(crop_name, price_value, published_at, region)
-            if item:
-                results.append(item)
-
-            for nested_item in card.select(".list li.for_stream_stat"):
-                if not isinstance(nested_item, Tag):
+            for card in soup.select(".line"):
+                if not isinstance(card, Tag):
                     continue
 
-                nested_title = nested_item.select_one("a")
-                nested_price = nested_item.select_one("span")
+                title_element = card.select_one(".th a")
+                price_element = card.select_one(".price")
+                region_element = card.select_one(".geo")
+                date_element = card.select_one(".date")
 
-                nested_crop_name = (
-                    nested_title.get_text(" ", strip=True) if nested_title else ""
+                crop_name = title_element.get_text(" ", strip=True) if title_element else ""
+                price_value = _parse_price(price_element.get_text(" ", strip=True) if price_element else "")
+                published_at = _parse_datetime(
+                    date_element.get_text(" ", strip=True) if date_element else ""
                 )
-                nested_price_value = _parse_price(
-                    nested_price.get_text(" ", strip=True) if nested_price else ""
-                )
+                region = region_element.get_text(" ", strip=True) if region_element else DEFAULT_REGION
 
-                item = _build_price_item(
-                    nested_crop_name,
-                    nested_price_value,
-                    published_at,
-                    region,
-                )
+                item = _build_price_item(crop_name, price_value, published_at, region)
                 if item:
-                    results.append(item)
+                    page_items.append(item)
+
+                for nested_item in card.select(".list li.for_stream_stat"):
+                    if not isinstance(nested_item, Tag):
+                        continue
+
+                    nested_title = nested_item.select_one("a")
+                    nested_price = nested_item.select_one("span")
+
+                    nested_crop_name = (
+                        nested_title.get_text(" ", strip=True) if nested_title else ""
+                    )
+                    nested_price_value = _parse_price(
+                        nested_price.get_text(" ", strip=True) if nested_price else ""
+                    )
+
+                    item = _build_price_item(
+                        nested_crop_name,
+                        nested_price_value,
+                        published_at,
+                        region,
+                    )
+                    if item:
+                        page_items.append(item)
+
+            if not page_items:
+                break
+
+            results.extend(page_items)
 
     if not results:
         raise RuntimeError("Agroserver page was loaded, but no herb listings were parsed.")
@@ -391,8 +431,7 @@ def fetch_agroserver_prices() -> list[dict[str, object]]:
     return _deduplicate(results)
 
 
-def _collect_fruitinfo_offer_urls(listing_url: str) -> list[str]:
-    soup = BeautifulSoup(_response_text(listing_url), "html.parser")
+def _collect_fruitinfo_offer_urls(listing_url: str, soup: BeautifulSoup) -> list[str]:
     listing_path = urlparse(listing_url).path.rstrip("/")
     seen: set[str] = set()
     offer_urls: list[str] = []
@@ -485,10 +524,27 @@ def fetch_fruitinfo_prices() -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
 
     for listing_url in FRUITINFO_URLS:
-        for offer_url in _collect_fruitinfo_offer_urls(listing_url):
-            item = _parse_fruitinfo_offer(offer_url)
-            if item:
-                results.append(item)
+        for page in range(1, MAX_PAGES + 1):
+            page_url = _build_page_url(listing_url, page)
+            response = _request_url(page_url, allow_404=True)
+            if response.status_code == 404:
+                break
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            offer_urls = _collect_fruitinfo_offer_urls(page_url, soup)
+            if not offer_urls:
+                break
+
+            page_items: list[dict[str, object]] = []
+            for offer_url in offer_urls:
+                item = _parse_fruitinfo_offer(offer_url)
+                if item:
+                    page_items.append(item)
+
+            if not page_items:
+                break
+
+            results.extend(page_items)
 
     if not results:
         raise RuntimeError("Fruitinfo pages were loaded, but no herb listings were parsed.")
