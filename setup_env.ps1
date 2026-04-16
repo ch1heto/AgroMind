@@ -43,8 +43,11 @@ if (-not (Test-Path $venvPython)) {
 }
 
 Write-Host "Installing dependencies from $requirementsPath"
-& $venvPython -m pip install --upgrade pip
-& $venvPython -m pip install -r $requirementsPath
+& $venvPython -m pip install --upgrade pip setuptools wheel
+& $venvPython -m pip install --upgrade -r $requirementsPath
+
+Write-Host "Verifying required packages"
+& $venvPython -c "import influxdb_client, plotly, apscheduler, streamlit_autorefresh"
 
 Write-Host ""
 Write-Host "Environment is ready."

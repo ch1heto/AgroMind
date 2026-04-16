@@ -1,6 +1,8 @@
 streamlit
+plotly
 beautifulsoup4
 requests
 feedparser
 pandas
 sqlalchemy
+apscheduler

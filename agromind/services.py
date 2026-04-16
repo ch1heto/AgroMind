@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
 
+import pandas as pd
 from sqlalchemy import Select, and_, desc, func, select
 from sqlalchemy.orm import Session
 
@@ -106,7 +108,44 @@ def get_recent_news(limit: int = 20) -> list[dict[str, Any]]:
     ]
 
 
-def get_latest_prices() -> list[dict[str, Any]]:
+def get_price_history_frame(days: int, crop_names: list[str] | None = None) -> pd.DataFrame:
+    init_db()
+    with session_scope() as session:
+        stmt = select(PriceSummary).order_by(
+            PriceSummary.published_at.asc(),
+            PriceSummary.crop_name.asc(),
+            PriceSummary.region.asc(),
+        )
+
+        if crop_names:
+            stmt = stmt.where(PriceSummary.crop_name.in_(crop_names))
+
+        if days > 0:
+            stmt = stmt.where(
+                PriceSummary.published_at >= datetime.utcnow() - timedelta(days=days)
+            )
+
+        rows = session.scalars(stmt).all()
+
+    if not rows:
+        return pd.DataFrame(
+            columns=["timestamp", "crop_name", "region", "wholesale_price"]
+        )
+
+    return pd.DataFrame(
+        [
+            {
+                "timestamp": row.published_at,
+                "crop_name": row.crop_name,
+                "region": row.region,
+                "wholesale_price": row.wholesale_price,
+            }
+            for row in rows
+        ]
+    )
+
+
+def get_latest_prices_frame(crop_names: list[str] | None = None) -> pd.DataFrame:
     init_db()
     with session_scope() as session:
         latest_subquery = (
@@ -131,14 +170,34 @@ def get_latest_prices() -> list[dict[str, Any]]:
             )
             .order_by(PriceSummary.crop_name.asc(), PriceSummary.region.asc())
         )
+
+        if crop_names:
+            stmt = stmt.where(PriceSummary.crop_name.in_(crop_names))
+
         rows = session.scalars(stmt).all()
 
-    return [
-        {
-            "Культура": row.crop_name,
-            "Оптовая цена, руб.": row.wholesale_price,
-            "Дата публикации": row.published_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "Регион": row.region,
-        }
-        for row in rows
-    ]
+    if not rows:
+        return pd.DataFrame(
+            columns=["crop_name", "region", "published_at", "wholesale_price"]
+        )
+
+    return pd.DataFrame(
+        [
+            {
+                "crop_name": row.crop_name,
+                "region": row.region,
+                "published_at": row.published_at,
+                "wholesale_price": row.wholesale_price,
+            }
+            for row in rows
+        ]
+    )
+
+
+def get_crop_filters() -> list[str]:
+    init_db()
+    with session_scope() as session:
+        stmt = select(PriceSummary.crop_name).distinct().order_by(PriceSummary.crop_name.asc())
+        rows = session.scalars(stmt).all()
+
+    return [crop_name for crop_name in rows if crop_name]
