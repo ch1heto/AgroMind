@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Callable, Iterable
+from typing import Callable, Iterator
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
@@ -106,6 +106,10 @@ CANONICAL_CROP_NAMES = (
     ("лук зеленый", "Лук зеленый"),
     ("лук-перо", "Лук зеленый"),
 )
+
+PriceItem = dict[str, object]
+PageParseResult = tuple[list[PriceItem], bool]
+SnapshotKey = tuple[str, float, datetime, str]
 
 
 def _normalize_text(value: str) -> str:
@@ -220,7 +224,7 @@ def _build_price_item(
     published_at: datetime,
     region: str | None,
     source: str,
-) -> dict[str, object] | None:
+) -> PriceItem | None:
     if not crop_name or wholesale_price is None:
         return None
 
@@ -235,6 +239,30 @@ def _build_price_item(
         "region": _normalize_region(region),
         "source": source,
     }
+
+
+def _snapshot_key(item: PriceItem) -> SnapshotKey:
+    return (
+        str(item["crop_name"]),
+        float(item["wholesale_price"]),
+        item["published_at"],
+        str(item["region"]),
+    )
+
+
+def _deduplicate(items: list[PriceItem], seen: set[SnapshotKey] | None = None) -> list[PriceItem]:
+    unique_items: list[PriceItem] = []
+    local_seen = seen if seen is not None else set()
+
+    for item in items:
+        snapshot_key = _snapshot_key(item)
+        if snapshot_key in local_seen:
+            continue
+
+        local_seen.add(snapshot_key)
+        unique_items.append(item)
+
+    return unique_items
 
 
 def _request_url(url: str, *, allow_404: bool = False) -> Response:
@@ -305,54 +333,33 @@ def _find_listing_container(node: Tag, *, max_depth: int = 5) -> Tag:
     return best
 
 
-def _deduplicate(items: Iterable[dict[str, object]]) -> list[dict[str, object]]:
-    unique_items: list[dict[str, object]] = []
-    seen: set[tuple[str, float, datetime, str]] = set()
-
-    for item in items:
-        snapshot_key = (
-            str(item["crop_name"]),
-            float(item["wholesale_price"]),
-            item["published_at"],
-            str(item["region"]),
-        )
-        if snapshot_key in seen:
-            continue
-
-        seen.add(snapshot_key)
-        unique_items.append(item)
-
-    return unique_items
-
-
 def _load_page(
     *,
-    source_name: str,
     base_url: str,
     page: int,
     page_builder: Callable[[str, int], str],
-    parser: Callable[[BeautifulSoup, str], list[dict[str, object]]],
-) -> tuple[int, list[dict[str, object]], bool]:
+    parser: Callable[[BeautifulSoup, str], PageParseResult],
+) -> tuple[int, list[PriceItem], bool]:
     page_url = page_builder(base_url, page)
     response = _request_url(page_url, allow_404=True)
     if response.status_code == 404:
         return page, [], True
 
     soup = BeautifulSoup(response.text, "lxml")
-    page_items = parser(soup, page_url)
-    if not page_items:
+    page_items, has_cards = parser(soup, page_url)
+    if not has_cards:
         return page, [], True
 
     return page, page_items, False
 
 
 def _paginate_source(
-    source_name: str,
     source_urls: list[str],
     page_builder: Callable[[str, int], str],
-    parser: Callable[[BeautifulSoup, str], list[dict[str, object]]],
-) -> list[dict[str, object]]:
-    results: list[dict[str, object]] = []
+    parser: Callable[[BeautifulSoup, str], PageParseResult],
+) -> Iterator[list[PriceItem]]:
+    seen: set[SnapshotKey] = set()
+    yielded_any = False
 
     for base_url in source_urls:
         next_page = 1
@@ -364,7 +371,6 @@ def _paginate_source(
                 future_to_page = {
                     executor.submit(
                         _load_page,
-                        source_name=source_name,
                         base_url=base_url,
                         page=page,
                         page_builder=page_builder,
@@ -373,33 +379,36 @@ def _paginate_source(
                     for page in batch_pages
                 }
 
-                batch_results: dict[int, tuple[list[dict[str, object]], bool]] = {}
+                batch_results: dict[int, tuple[list[PriceItem], bool]] = {}
                 for future in as_completed(future_to_page):
                     page, page_items, stop_signal = future.result()
                     batch_results[page] = (page_items, stop_signal)
 
+                ordered_batch: list[PriceItem] = []
                 for page in sorted(batch_pages):
                     page_items, stop_signal = batch_results[page]
+                    if page_items:
+                        ordered_batch.extend(page_items)
                     if stop_signal:
                         should_stop = True
                         break
-                    results.extend(page_items)
+
+                unique_batch = _deduplicate(ordered_batch, seen)
+                if unique_batch:
+                    yielded_any = True
+                    yield unique_batch
 
                 next_page += MAX_WORKERS
 
-    if not results:
-        raise RuntimeError(f"{source_name} pages were loaded, but no target herb listings were parsed.")
-
-    return _deduplicate(results)
+    if not yielded_any:
+        raise RuntimeError("Pages were loaded, but no target herb listings were parsed.")
 
 
-def _parse_agrobazar_page(soup: BeautifulSoup, page_url: str) -> list[dict[str, object]]:
-    page_items: list[dict[str, object]] = []
+def _parse_agrobazar_page(soup: BeautifulSoup, page_url: str) -> PageParseResult:
+    cards = [card for card in soup.select(".pl-item") if isinstance(card, Tag)]
+    page_items: list[PriceItem] = []
 
-    for card in soup.select(".pl-item"):
-        if not isinstance(card, Tag):
-            continue
-
+    for card in cards:
         title_element = card.select_one(".pl-title")
         price_element = card.select_one(".pl-price")
         date_element = card.select_one(".pl-date")
@@ -420,26 +429,27 @@ def _parse_agrobazar_page(soup: BeautifulSoup, page_url: str) -> list[dict[str, 
         if item:
             page_items.append(item)
 
-    return page_items
+    return page_items, bool(cards)
 
 
-def fetch_wholesale_herb_prices() -> list[dict[str, object]]:
-    return _paginate_source(
-        source_name="Agrobazar",
+def fetch_wholesale_herb_prices() -> Iterator[list[PriceItem]]:
+    yield from _paginate_source(
         source_urls=AGROBAZAR_URLS,
         page_builder=_build_query_page_url,
         parser=_parse_agrobazar_page,
     )
 
 
-def _parse_b2b_trade_page(soup: BeautifulSoup, page_url: str) -> list[dict[str, object]]:
-    page_items: list[dict[str, object]] = []
+def _parse_b2b_trade_page(soup: BeautifulSoup, page_url: str) -> PageParseResult:
+    product_anchors = [
+        anchor
+        for anchor in soup.select("a[href*='/ru/product/']")
+        if isinstance(anchor, Tag)
+    ]
+    page_items: list[PriceItem] = []
     seen_urls: set[str] = set()
 
-    for anchor in soup.select("a[href*='/ru/product/']"):
-        if not isinstance(anchor, Tag):
-            continue
-
+    for anchor in product_anchors:
         href = anchor.get("href", "").strip()
         absolute_url = urljoin(page_url, href)
         if absolute_url in seen_urls:
@@ -466,34 +476,33 @@ def _parse_b2b_trade_page(soup: BeautifulSoup, page_url: str) -> list[dict[str, 
             page_items.append(item)
             seen_urls.add(absolute_url)
 
-    return page_items
+    return page_items, bool(product_anchors)
 
 
-def fetch_b2b_trade_prices() -> list[dict[str, object]]:
-    return _paginate_source(
-        source_name="B2B.TRADE",
+def fetch_b2b_trade_prices() -> Iterator[list[PriceItem]]:
+    yield from _paginate_source(
         source_urls=B2B_TRADE_URLS,
         page_builder=_build_query_page_url,
         parser=_parse_b2b_trade_page,
     )
 
 
-def _parse_agroru_page(soup: BeautifulSoup, page_url: str) -> list[dict[str, object]]:
-    page_items: list[dict[str, object]] = []
+def _parse_agroru_page(soup: BeautifulSoup, page_url: str) -> PageParseResult:
+    listing_anchors = [
+        anchor
+        for anchor in soup.find_all("a", href=True)
+        if isinstance(anchor, Tag)
+        and re.search(r"/doska/.+-\d+\.htm$", urlparse(urljoin(page_url, anchor.get('href', '').strip())).path)
+    ]
+    page_items: list[PriceItem] = []
     seen_urls: set[str] = set()
 
-    for anchor in soup.find_all("a", href=True):
-        if not isinstance(anchor, Tag):
-            continue
-
+    for anchor in listing_anchors:
         href = anchor.get("href", "").strip()
         absolute_url = urljoin(page_url, href)
-        path = urlparse(absolute_url).path
         title = _normalize_text(anchor.get_text(" ", strip=True))
 
         if absolute_url in seen_urls:
-            continue
-        if not re.search(r"/doska/.+-\d+\.htm$", path):
             continue
         if not _contains_herb_keyword(title):
             continue
@@ -523,21 +532,21 @@ def _parse_agroru_page(soup: BeautifulSoup, page_url: str) -> list[dict[str, obj
             page_items.append(item)
             seen_urls.add(absolute_url)
 
-    return page_items
+    return page_items, bool(listing_anchors)
 
 
-def fetch_agroru_prices() -> list[dict[str, object]]:
-    return _paginate_source(
-        source_name="Agroru",
+def fetch_agroru_prices() -> Iterator[list[PriceItem]]:
+    yield from _paginate_source(
         source_urls=AGRORU_URLS,
         page_builder=_build_agroru_page_url,
         parser=_parse_agroru_page,
     )
 
 
-def fetch_all_prices() -> list[dict[str, object]]:
-    results: list[dict[str, object]] = []
+def fetch_all_prices() -> Iterator[list[PriceItem]]:
     errors: list[str] = []
+    yielded_any = False
+    seen: set[SnapshotKey] = set()
 
     for parser in (
         fetch_wholesale_herb_prices,
@@ -545,12 +554,13 @@ def fetch_all_prices() -> list[dict[str, object]]:
         fetch_agroru_prices,
     ):
         try:
-            results.extend(parser())
+            for batch in parser():
+                unique_batch = _deduplicate(batch, seen)
+                if unique_batch:
+                    yielded_any = True
+                    yield unique_batch
         except Exception as exc:
             errors.append(f"{parser.__name__}: {exc}")
 
-    deduplicated = _deduplicate(results)
-    if deduplicated:
-        return deduplicated
-
-    raise RuntimeError("; ".join(errors) if errors else "No price data was collected.")
+    if not yielded_any:
+        raise RuntimeError("; ".join(errors) if errors else "No price data was collected.")

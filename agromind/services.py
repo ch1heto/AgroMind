@@ -71,23 +71,25 @@ def refresh_data() -> dict[str, Any]:
     }
 
     news_items: list[dict[str, Any]] = []
-    price_items: list[dict[str, Any]] = []
 
     try:
         news_items = fetch_news_from_feeds()
     except Exception as exc:
         result["errors"].append(f"News parsing error: {exc}")
 
-    try:
-        price_items = fetch_all_prices()
-    except Exception as exc:
-        result["errors"].append(f"Price parsing error: {exc}")
-
     with session_scope() as session:
         if news_items:
             result["news_added"] = save_news(session, news_items)
-        if price_items:
-            result["prices_added"] = save_price_summaries(session, price_items)
+            session.commit()
+
+        try:
+            for batch in fetch_all_prices():
+                if not batch:
+                    continue
+                result["prices_added"] += save_price_summaries(session, batch)
+                session.commit()
+        except Exception as exc:
+            result["errors"].append(f"Price parsing error: {exc}")
 
     return result
 
