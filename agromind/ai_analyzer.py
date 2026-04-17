@@ -175,37 +175,74 @@ def _get_weather_forecast(region: str) -> str:
     normalized_region = (region or "").strip() or "Москва"
 
     try:
-        response = requests.get(
-            f"https://wttr.in/{normalized_region}?format=j1",
+        geocoding_response = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={
+                "name": normalized_region,
+                "count": 1,
+                "language": "ru",
+                "format": "json",
+            },
             timeout=5,
         )
-        response.raise_for_status()
-        payload = response.json()
+        geocoding_response.raise_for_status()
+        geocoding_payload = geocoding_response.json()
+    except requests.exceptions.RequestException:
+        return WEATHER_ERROR_TEXT
 
-        current_condition = payload.get("current_condition", [{}])[0]
-        current_temp = current_condition.get("temp_C")
-        current_humidity = current_condition.get("humidity")
-        if current_temp in (None, "") or current_humidity in (None, ""):
-            raise ValueError("missing current weather data")
+    results = geocoding_payload.get("results") or []
+    if not results:
+        return f"Не удалось определить координаты для региона: {normalized_region}"
 
-        forecast_parts: list[str] = []
-        for day in payload.get("weather", [])[:3]:
-            date_value = day.get("date")
-            avg_temp = day.get("avgtempC")
-            if not date_value or avg_temp in (None, ""):
-                continue
-            forecast_parts.append(f"{date_value}: {avg_temp}°C")
+    location = results[0]
+    latitude = location.get("latitude")
+    longitude = location.get("longitude")
+    location_name = location.get("name") or normalized_region
+    if latitude is None or longitude is None:
+        return f"Не удалось определить координаты для региона: {normalized_region}"
 
-        if not forecast_parts:
-            raise ValueError("missing forecast")
-
-        return (
-            f"Регион: {normalized_region}. "
-            f"Сейчас {current_temp}°C, влажность {current_humidity}%. "
-            f"Прогноз температуры на 3 дня: {', '.join(forecast_parts)}."
+    try:
+        weather_response = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": latitude,
+                "longitude": longitude,
+                "current": "temperature_2m,relative_humidity_2m",
+                "daily": "temperature_2m_max,temperature_2m_min",
+                "timezone": "auto",
+            },
+            timeout=5,
         )
+        weather_response.raise_for_status()
+        weather_payload = weather_response.json()
     except (requests.exceptions.RequestException, ValueError, KeyError, IndexError):
         return WEATHER_ERROR_TEXT
+
+    current = weather_payload.get("current", {})
+    current_temp = current.get("temperature_2m")
+    current_humidity = current.get("relative_humidity_2m")
+    if current_temp in (None, "") or current_humidity in (None, ""):
+        return WEATHER_ERROR_TEXT
+
+    daily = weather_payload.get("daily", {})
+    dates = daily.get("time") or []
+    max_temps = daily.get("temperature_2m_max") or []
+    min_temps = daily.get("temperature_2m_min") or []
+
+    forecast_parts: list[str] = []
+    for date_value, min_temp, max_temp in list(zip(dates, min_temps, max_temps))[:3]:
+        if date_value in (None, "") or min_temp in (None, "") or max_temp in (None, ""):
+            continue
+        forecast_parts.append(f"{date_value}: от {min_temp} до {max_temp}°C")
+
+    if not forecast_parts:
+        return WEATHER_ERROR_TEXT
+
+    return (
+        f"Регион: {location_name}. "
+        f"Сейчас: {current_temp}°C, влажность {current_humidity}%. "
+        f"Прогноз: {', '.join(forecast_parts)}"
+    )
 
 
 def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> str:
@@ -262,6 +299,7 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> st
                 "model": OLLAMA_MODEL,
                 "messages": messages,
                 "stream": False,
+                "stop": ["<|im_end|>", "<|im_start|>", "<|endoftext|>"],
             },
             timeout=None,
         )
