@@ -18,6 +18,8 @@ from agromind.config import (
     AGROBAZAR_URLS,
     B2B_TRADE_URLS,
     DEFAULT_REGION,
+    FRUITINFO_URLS,
+    ORDERBRIDGE_URLS,
     REQUEST_HEADERS,
     REQUEST_TIMEOUT,
 )
@@ -51,6 +53,17 @@ HERB_KEYWORDS = (
     "лук зеленый",
     "лук зелёный",
     "лук-перо",
+)
+
+FOREIGN_COUNTRIES = (
+    "египет",
+    "узбекистан",
+    "азербайджан",
+    "турция",
+    "беларусь",
+    "казахстан",
+    "армения",
+    "китай",
 )
 
 PRICE_RE = re.compile(
@@ -234,6 +247,9 @@ def _build_price_item(
         return None
 
     if (datetime.utcnow() - published_at).days > 180:
+        return None
+
+    if any(country in (_normalize_region(region).lower()) for country in FOREIGN_COUNTRIES):
         return None
 
     return {
@@ -491,12 +507,106 @@ def fetch_b2b_trade_prices() -> Iterator[list[PriceItem]]:
     )
 
 
+def _parse_fruitinfo_page(soup: BeautifulSoup, page_url: str) -> PageParseResult:
+    listing_anchors = [
+        anchor
+        for anchor in soup.find_all("a", href=True)
+        if isinstance(anchor, Tag)
+    ]
+    page_items: list[PriceItem] = []
+    seen_urls: set[str] = set()
+
+    for anchor in listing_anchors:
+        href = anchor.get("href", "").strip()
+        absolute_url = urljoin(page_url, href)
+        title = _normalize_text(anchor.get_text(" ", strip=True))
+
+        if absolute_url in seen_urls:
+            continue
+        if not _contains_herb_keyword(title):
+            continue
+
+        container = _find_listing_container(anchor, max_depth=6)
+        container_text = _normalize_text(container.get_text(" ", strip=True))
+        price_value = _parse_price(container_text)
+        if price_value is None:
+            continue
+
+        item = _build_price_item(
+            crop_name=title,
+            wholesale_price=price_value,
+            published_at=_parse_datetime(container_text),
+            region=DEFAULT_REGION,
+            source="fruitinfo",
+        )
+        if item:
+            page_items.append(item)
+            seen_urls.add(absolute_url)
+
+    return page_items, bool(listing_anchors)
+
+
+def fetch_fruitinfo_prices() -> Iterator[list[PriceItem]]:
+    yield from _paginate_source(
+        source_urls=FRUITINFO_URLS,
+        page_builder=_build_query_page_url,
+        parser=_parse_fruitinfo_page,
+    )
+
+
+def _parse_orderbridge_page(soup: BeautifulSoup, page_url: str) -> PageParseResult:
+    listing_anchors = [
+        anchor
+        for anchor in soup.find_all("a", href=True)
+        if isinstance(anchor, Tag)
+    ]
+    page_items: list[PriceItem] = []
+    seen_urls: set[str] = set()
+
+    for anchor in listing_anchors:
+        href = anchor.get("href", "").strip()
+        absolute_url = urljoin(page_url, href)
+        title = _normalize_text(anchor.get_text(" ", strip=True))
+
+        if absolute_url in seen_urls:
+            continue
+        if not _contains_herb_keyword(title):
+            continue
+
+        container = _find_listing_container(anchor, max_depth=6)
+        container_text = _normalize_text(container.get_text(" ", strip=True))
+        price_value = _parse_price(container_text)
+        if price_value is None:
+            continue
+
+        item = _build_price_item(
+            crop_name=title,
+            wholesale_price=price_value,
+            published_at=_parse_datetime(container_text),
+            region=DEFAULT_REGION,
+            source="orderbridge",
+        )
+        if item:
+            page_items.append(item)
+            seen_urls.add(absolute_url)
+
+    return page_items, bool(listing_anchors)
+
+
+def fetch_orderbridge_prices() -> Iterator[list[PriceItem]]:
+    yield from _paginate_source(
+        source_urls=ORDERBRIDGE_URLS,
+        page_builder=_build_query_page_url,
+        parser=_parse_orderbridge_page,
+    )
+
+
 def _parse_agroru_page(soup: BeautifulSoup, page_url: str) -> PageParseResult:
     listing_anchors = [
         anchor
         for anchor in soup.find_all("a", href=True)
         if isinstance(anchor, Tag)
-        and re.search(r"/doska/.+-\d+\.htm$", urlparse(urljoin(page_url, anchor.get('href', '').strip())).path)
+        and re.search(r"/doska/.+-\d+\.htm$", urlparse(urljoin(page_url, anchor.get("href", "").strip())).path)
     ]
     page_items: list[PriceItem] = []
     seen_urls: set[str] = set()
@@ -555,6 +665,8 @@ def fetch_all_prices() -> Iterator[list[PriceItem]]:
     for parser in (
         fetch_wholesale_herb_prices,
         fetch_b2b_trade_prices,
+        fetch_fruitinfo_prices,
+        fetch_orderbridge_prices,
         fetch_agroru_prices,
     ):
         try:

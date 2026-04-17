@@ -6,8 +6,13 @@ from time import struct_time
 from typing import Any
 
 import feedparser
+import requests
+import urllib3
 
 from agromind.config import NEWS_FEEDS, REQUEST_HEADERS
+
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def _normalize_datetime(raw_value: Any) -> datetime | None:
@@ -46,7 +51,13 @@ def fetch_news_from_feeds() -> list[dict[str, Any]]:
     seen_urls: set[str] = set()
 
     for feed_url in NEWS_FEEDS:
-        parsed_feed = feedparser.parse(feed_url, request_headers=REQUEST_HEADERS)
+        try:
+            response = requests.get(feed_url, headers=REQUEST_HEADERS, timeout=20, verify=False)
+            response.raise_for_status()
+            parsed_feed = feedparser.parse(response.content)
+        except Exception as req_exc:
+            errors.append(f"Failed to download RSS feed {feed_url}: {req_exc}")
+            continue
 
         if getattr(parsed_feed, "bozo", False) and not parsed_feed.entries:
             error = getattr(parsed_feed, "bozo_exception", "Unknown RSS parsing error")

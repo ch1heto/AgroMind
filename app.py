@@ -22,6 +22,7 @@ if fragment_decorator is None:  # pragma: no cover
     def fragment_decorator(*args, **kwargs):
         def wrapper(func):
             return func
+
         return wrapper
 
 
@@ -89,15 +90,24 @@ def render_news_feed(news_items: list[dict[str, object]]) -> None:
 
 def build_price_figure(history_frame: pd.DataFrame):
     chart_frame = history_frame.copy()
+    chart_frame["timestamp"] = pd.to_datetime(chart_frame["timestamp"])
+    chart_frame["day"] = chart_frame["timestamp"].dt.date
     chart_frame["series"] = chart_frame["crop_name"] + " | " + chart_frame["region"]
+    chart_frame = (
+        chart_frame.groupby(["day", "series", "crop_name", "region"], as_index=False)["wholesale_price"]
+        .mean()
+        .rename(columns={"day": "timestamp"})
+        .sort_values(["series", "timestamp"])
+    )
 
-    figure = px.scatter(
+    figure = px.line(
         chart_frame,
         x="timestamp",
         y="wholesale_price",
         color="series",
         title="Динамика оптовых цен",
-        opacity=0.7,
+        line_shape="spline",
+        render_mode="svg",
         labels={
             "timestamp": "Дата",
             "wholesale_price": "Цена, руб.",
@@ -111,11 +121,12 @@ def build_price_figure(history_frame: pd.DataFrame):
             "series": False,
         },
     )
+    figure.update_traces(fill="tozeroy", mode="lines+markers", opacity=0.8)
     figure.update_layout(
         template="plotly_dark",
         legend_title_text="Культура и регион",
         margin=dict(l=20, r=20, t=60, b=20),
-        hovermode="closest",
+        hovermode="x unified",
     )
     figure.update_traces(marker=dict(size=11))
     return figure
@@ -244,7 +255,9 @@ def render_dashboard_tabs() -> None:
                 st.plotly_chart(build_boxplot_figure(history_frame), use_container_width=True)
             with top_right:
                 st.subheader("Сводка выборки")
-                st.caption("Точечный график показывает разреженность и кластеры цен, boxplot — медиану и разброс по культуре.")
+                st.caption(
+                    "Линейный график показывает сглаженную дневную динамику средних цен, boxplot помогает оценить медиану и разброс по культуре."
+                )
                 if not analytics_snapshot.empty:
                     summary_table = analytics_snapshot.rename(
                         columns={

@@ -21,10 +21,25 @@ AGRORU_URLS = [
     "https://agroru.com/doska/salaty-i-zelen-optom/",
 ]
 
+FRUITINFO_URLS = [
+    "https://fruitinfo.biz/Russia/trade/veget/bazilik",
+    "https://fruitinfo.biz/Russia/trade/veget/shpinat/sale",
+    "https://fruitinfo.biz/all/trade/veget/zeleniy-salat/sale",
+    "https://fruitinfo.biz/moskva/trade/veget/mikrozelen",
+    "https://fruitinfo.biz/chelyabinsk/trade/veget/mikrozelen",
+    "https://fruitinfo.biz/chelyabinsk/trade/veget/bazilik",
+    "https://fruitinfo.biz/ekaterinburg/trade/veget/mikrozelen",
+]
+
+ORDERBRIDGE_URLS = [
+    "https://orderbridge.ru/catalog/ovoschi_i_zelen/svezhie_ovoschi_pomidory_ogurtsy_kapusta_i_td/svezhaya_zelen_126",
+]
+
 NEWS_FEEDS = (
     "https://www.agroinvestor.ru/rss/public-agronews.xml",
     "https://www.agroinvestor.ru/rss/public-agroanalytics.xml",
     "https://fermer.ru/feed/forum/new",
+    "https://glavagronom.ru/feed/",
 )
 
 DEFAULT_REGION = "Россия"
