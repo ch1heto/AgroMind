@@ -5,7 +5,11 @@ from datetime import datetime, timedelta
 import pandas as pd
 import requests
 
-from agromind.services import get_latest_prices_frame, get_recent_news
+from agromind.services import (
+    get_latest_demand_signals_frame,
+    get_latest_prices_frame,
+    get_recent_news,
+)
 
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -144,6 +148,30 @@ def _build_price_context(df: pd.DataFrame, user_region: str) -> str:
     return f"{local_prices}\n\n{national_prices}"
 
 
+def _build_demand_context(df: pd.DataFrame, user_region: str) -> str:
+    if df.empty:
+        return "[АКТУАЛЬНЫЕ ТЕНДЕРЫ (ГОСЗАКУПКИ В РЕГИОНЕ)]:\n- Актуальных тендеров не найдено."
+
+    local_mask = df["region"].fillna("").apply(
+        lambda region_value: _has_local_region_match(region_value, user_region)
+    )
+    local_df = (
+        df.loc[local_mask]
+        .sort_values(["published_at", "contract_price"], ascending=[False, False])
+        .head(10)
+    )
+
+    if local_df.empty:
+        return "[АКТУАЛЬНЫЕ ТЕНДЕРЫ (ГОСЗАКУПКИ В РЕГИОНЕ)]:\n- Актуальных тендеров не найдено."
+
+    lines = ["[АКТУАЛЬНЫЕ ТЕНДЕРЫ (ГОСЗАКУПКИ В РЕГИОНЕ)]:"]
+    for row in local_df.itertuples(index=False):
+        lines.append(
+            f"- Культура: {row.crop_name} | Сумма: {row.contract_price:.2f} руб. | Ссылка: {row.url}"
+        )
+    return "\n".join(lines)
+
+
 def _build_news_summary() -> str:
     news_items = get_recent_news(limit=5)
     if not news_items:
@@ -250,9 +278,11 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> st
     normalized_region = (user_region or "").strip() or "Москва"
 
     price_df = get_latest_prices_frame()
+    demand_df = get_latest_demand_signals_frame()
     weather_summary = _get_weather_forecast(normalized_region)
     agro_handbook_summary = _build_agro_handbook_reference(now)
     price_context = _build_price_context(price_df, normalized_region)
+    demand_context = _build_demand_context(demand_df, normalized_region)
     news_summary = _build_news_summary()
 
     system_prompt = (
@@ -267,6 +297,9 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> st
         "АГРО-ДАННЫЕ: Опирайся на переданный AGRO_HANDBOOK "
         "(циклы, pH, EC, температура, влажность). "
         "Считай дату сбора урожая от сегодняшней даты.\n\n"
+        "5. АНАЛИЗ СПРОСА (ТЕНДЕРЫ): Если в блоке 'ТЕНДЕРЫ' есть активный запрос на культуру, "
+        "ОБЯЗАТЕЛЬНО обрати на это внимание пользователя. Государственные закупки — это гарантированный сбыт. "
+        "Если тендер найден, рекомендуй эту культуру в приоритетном порядке, сопоставив цикл её выращивания с текущей датой.\n\n"
         "РЫНОК: Если есть 'Локальные цены', опирайся на них. "
         "Если их нет, используй 'Среднюю выборку по РФ' как ориентир. "
         "Рекомендуй маржинальные и быстрые культуры."
@@ -278,6 +311,7 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> st
         f"Погода:\n{weather_summary}\n\n"
         f"AGRO_HANDBOOK:\n{agro_handbook_summary}\n\n"
         f"{price_context}\n\n"
+        f"{demand_context}\n\n"
         f"Свежие новости:\n{news_summary}\n\n"
         f"Запрос пользователя:\n{user_message}"
     )

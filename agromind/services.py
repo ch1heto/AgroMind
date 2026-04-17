@@ -8,7 +8,8 @@ from sqlalchemy import Select, and_, desc, func, select
 from sqlalchemy.orm import Session
 
 from agromind.database import init_db, session_scope
-from agromind.models import News, PriceSummary
+from agromind.models import DemandSignal, News, PriceSummary
+from agromind.parsers.demand import fetch_demand_signals
 from agromind.parsers.news import fetch_news_from_feeds
 from agromind.parsers.prices import fetch_all_prices
 
@@ -62,20 +63,51 @@ def save_price_summaries(session: Session, items: list[dict[str, Any]]) -> int:
     return added
 
 
+def save_demand_signals(session: Session, items: list[dict[str, Any]]) -> int:
+    added = 0
+
+    for item in items:
+        exists = session.scalar(select(DemandSignal.id).where(DemandSignal.url == item["url"]))
+        if exists:
+            continue
+
+        session.add(
+            DemandSignal(
+                crop_name=item["crop_name"],
+                region=item["region"],
+                contract_price=item["contract_price"],
+                published_at=item["published_at"],
+                url=item["url"],
+            )
+        )
+        added += 1
+
+    return added
+
+
 def refresh_data() -> dict[str, Any]:
     init_db()
     result: dict[str, Any] = {
         "news_added": 0,
         "prices_added": 0,
+        "demand_added": 0,
         "errors": [],
     }
 
     news_items: list[dict[str, Any]] = []
+    demand_items: list[dict[str, Any]] = []
 
     try:
         news_items = fetch_news_from_feeds()
     except Exception as exc:
         result["errors"].append(f"News parsing error: {exc}")
+
+    try:
+        from agromind.ai_analyzer import AGRO_HANDBOOK
+
+        demand_items = fetch_demand_signals(list(AGRO_HANDBOOK.keys()))
+    except Exception as exc:
+        result["errors"].append(f"Demand parsing error: {exc}")
 
     with session_scope() as session:
         if news_items:
@@ -90,6 +122,13 @@ def refresh_data() -> dict[str, Any]:
                 session.commit()
         except Exception as exc:
             result["errors"].append(f"Price parsing error: {exc}")
+
+        if demand_items:
+            try:
+                result["demand_added"] = save_demand_signals(session, demand_items)
+                session.commit()
+            except Exception as exc:
+                result["errors"].append(f"Demand save error: {exc}")
 
     return result
 
@@ -190,6 +229,35 @@ def get_latest_prices_frame(crop_names: list[str] | None = None) -> pd.DataFrame
                 "region": row.region,
                 "published_at": row.published_at,
                 "wholesale_price": row.wholesale_price,
+            }
+            for row in rows
+        ]
+    )
+
+
+def get_latest_demand_signals_frame() -> pd.DataFrame:
+    init_db()
+    with session_scope() as session:
+        stmt = select(DemandSignal).order_by(
+            DemandSignal.published_at.desc(),
+            DemandSignal.contract_price.desc(),
+            DemandSignal.crop_name.asc(),
+        )
+        rows = session.scalars(stmt).all()
+
+    if not rows:
+        return pd.DataFrame(
+            columns=["crop_name", "region", "contract_price", "published_at", "url"]
+        )
+
+    return pd.DataFrame(
+        [
+            {
+                "crop_name": row.crop_name,
+                "region": row.region,
+                "contract_price": row.contract_price,
+                "published_at": row.published_at,
+                "url": row.url,
             }
             for row in rows
         ]
