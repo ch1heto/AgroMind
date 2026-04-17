@@ -18,7 +18,7 @@ from agromind.services import (
 
 
 fragment_decorator = getattr(st, "fragment", getattr(st, "experimental_fragment", None))
-if fragment_decorator is None:  # pragma: no cover - fallback for very old Streamlit
+if fragment_decorator is None:  # pragma: no cover
     def fragment_decorator(*args, **kwargs):
         def wrapper(func):
             return func
@@ -71,7 +71,7 @@ st.markdown(
 
 def render_news_feed(news_items: list[dict[str, object]]) -> None:
     if not news_items:
-        st.info("В SQLite пока нет новостей. Запустите обновление вручную или дождитесь следующего цикла воркера.")
+        st.info("В SQLite пока нет новостей. Запустите обновление вручную или дождитесь следующего цикла.")
         return
 
     for item in news_items:
@@ -121,76 +121,107 @@ def build_price_figure(history_frame: pd.DataFrame):
 
 
 @fragment_decorator(run_every="30s")
-def render_prices_fragment(selected_crops: list[str], history_days: int) -> None:
+def render_dashboard_tabs() -> None:
     try:
-        history_frame = get_price_history_frame(days=history_days, crop_names=selected_crops or None)
-        latest_prices = get_latest_prices_frame(crop_names=selected_crops or None)
+        crop_options = get_crop_filters()
+        news_items = get_recent_news()
+        latest_prices = get_latest_prices_frame()
     except Exception as exc:
-        st.error(f"Не удалось прочитать ценовые данные из SQLite: {exc}")
+        st.error(f"Не удалось прочитать данные из SQLite: {exc}")
         return
 
-    st.subheader("Цены на зелень")
-    st.caption(
-        f"Автообновление блока: каждые 30 секунд. Последний рендер: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    if "selected_crops" not in st.session_state:
+        st.session_state.selected_crops = crop_options[:3]
+    if "history_days" not in st.session_state:
+        st.session_state.history_days = DEFAULT_HISTORY_DAYS
 
-    if history_frame.empty:
-        st.info("В SQLite пока нет ценовых записей. Запустите обновление данных.")
-        return
+    st.session_state.selected_crops = [
+        crop_name for crop_name in st.session_state.selected_crops if crop_name in crop_options
+    ]
+    if not st.session_state.selected_crops and crop_options:
+        st.session_state.selected_crops = crop_options[:3]
 
-    top_left, top_right = st.columns((2, 1), gap="large")
+    tab1, tab2 = st.tabs(["Сводка и Новости", "Аналитика и Графики"])
 
-    with top_left:
-        st.plotly_chart(build_price_figure(history_frame), use_container_width=True)
+    with tab1:
+        col1, col2 = st.columns((1.1, 1), gap="large")
 
-    with top_right:
-        stats_frame = latest_prices.copy()
-        if stats_frame.empty:
-            st.info("Актуальный ценовой срез пока пуст.")
+        with col1:
+            st.subheader("Актуальный ценовой срез")
+            if latest_prices.empty:
+                st.info("Свежий ценовой срез пока пуст.")
+            else:
+                summary_frame = latest_prices.rename(
+                    columns={
+                        "crop_name": "Культура",
+                        "region": "Регион",
+                        "published_at": "Дата публикации",
+                        "wholesale_price": "Оптовая цена, руб.",
+                    }
+                )
+                st.dataframe(summary_frame, use_container_width=True, hide_index=True)
+
+        with col2:
+            st.subheader("Свежие новости")
+            render_news_feed(news_items)
+
+    with tab2:
+        st.subheader("Аналитика и Графики")
+
+        controls_col1, controls_col2 = st.columns((1.3, 1), gap="large")
+        with controls_col1:
+            if "selected_crops_filter" not in st.session_state:
+                st.session_state["selected_crops_filter"] = crop_options[:3] if crop_options else []
+
+            selected_crops = st.multiselect(
+                "Культуры для сравнения",
+                options=crop_options,
+                key="selected_crops_filter",
+                help="Можно сравнить одну культуру в разных регионах, например базилик в Москве и Самаре.",
+            )
+        with controls_col2:
+            history_days = st.slider(
+                "Глубина истории, дней",
+                min_value=7,
+                max_value=180,
+                value=st.session_state.history_days,
+                key="history_days",
+            )
+
+        try:
+            history_frame = get_price_history_frame(
+                days=history_days,
+                crop_names=selected_crops or None,
+            )
+            analytics_snapshot = get_latest_prices_frame(crop_names=selected_crops or None)
+        except Exception as exc:
+            st.error(f"Не удалось прочитать аналитические данные из SQLite: {exc}")
+            return
+
+        metrics_col1, metrics_col2, metrics_col3 = st.columns((1, 1, 1.2))
+        with metrics_col1:
+            st.metric("Активных культур", int(analytics_snapshot["crop_name"].nunique()) if not analytics_snapshot.empty else 0)
+        with metrics_col2:
+            st.metric("Активных регионов", int(analytics_snapshot["region"].nunique()) if not analytics_snapshot.empty else 0)
+        with metrics_col3:
+            st.caption(
+                f"Автообновление вкладок: каждые 30 секунд. Последний рендер: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+        if history_frame.empty:
+            st.info("По выбранным культурам пока нет исторических данных.")
         else:
-            st.metric("Активных культур", int(stats_frame["crop_name"].nunique()))
-            st.metric("Активных регионов", int(stats_frame["region"].nunique()))
-            st.metric("Последних записей", len(stats_frame))
-
-    st.subheader("Актуальный ценовой срез")
-    table_frame = latest_prices.rename(
-        columns={
-            "crop_name": "Культура",
-            "region": "Регион",
-            "published_at": "Дата публикации",
-            "wholesale_price": "Оптовая цена, руб.",
-        }
-    )
-    st.dataframe(table_frame, use_container_width=True, hide_index=True)
+            st.plotly_chart(build_price_figure(history_frame), use_container_width=True)
 
 
 def main() -> None:
     init_db()
 
     st.title("AgroMind")
-    st.caption("Дашборд хранит новости и ценовые срезы в SQLite и динамически обновляет блок цен.")
+    st.caption("Дашборд по ценам на гидропонную зелень и профильным агроновостям.")
 
     with st.sidebar:
-        st.subheader("Управление")
-        history_days = st.slider(
-            "Глубина истории, дней",
-            min_value=7,
-            max_value=180,
-            value=DEFAULT_HISTORY_DAYS,
-        )
-
-        try:
-            crop_options = get_crop_filters()
-        except Exception as exc:
-            crop_options = []
-            st.warning(f"Не удалось загрузить список культур из SQLite: {exc}")
-        selected_crops = st.multiselect(
-            "Фильтр по культурам",
-            options=crop_options,
-            default=crop_options[:3],
-            help="Можно сравнить одну и ту же культуру по разным регионам, например базилик в Москве и Самаре.",
-        )
-
+        st.title("AgroMind")
         if st.button("Обновить данные сейчас", use_container_width=True, type="primary"):
             with st.spinner("Парсинг новостей и ценовых площадок..."):
                 result = refresh_data()
@@ -203,17 +234,9 @@ def main() -> None:
                 )
             if result["errors"]:
                 for error in result["errors"]:
-                    st.warning(error)
+                    st.error(error)
 
-        st.caption("Ценовой блок ниже обновляется автоматически без полной перезагрузки страницы.")
-
-    render_prices_fragment(selected_crops=selected_crops, history_days=history_days)
-
-    st.subheader("Свежие новости")
-    try:
-        render_news_feed(get_recent_news())
-    except Exception as exc:
-        st.error(f"Не удалось прочитать новости из SQLite: {exc}")
+    render_dashboard_tabs()
 
 
 if __name__ == "__main__":

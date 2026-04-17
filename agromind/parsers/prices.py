@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Callable, Iterable
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
@@ -9,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 from requests import Response
+from requests.adapters import HTTPAdapter
 from urllib3.exceptions import InsecureRequestWarning
 
 from agromind.config import (
@@ -23,42 +25,31 @@ from agromind.config import (
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
+MAX_WORKERS = 5
+
+SESSION = requests.Session()
+SESSION.headers.update({**REQUEST_HEADERS, "Connection": "keep-alive"})
+SESSION.mount("http://", HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS))
+SESSION.mount("https://", HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS))
+
 HERB_KEYWORDS = (
-    "зелень",
     "микрозелень",
-    "салат",
+    "базилик",
+    "шпинат",
     "руккола",
     "рукола",
+    "салат",
     "айсберг",
     "романо",
     "лолло",
-    "корн",
-    "кресс",
-    "укроп",
-    "петрушка",
+    "мята",
+    "мелисса",
     "кинза",
-    "базилик",
-    "шпинат",
-    "щавель",
+    "петрушка",
+    "укроп",
     "лук зеленый",
     "лук зелёный",
     "лук-перо",
-    "шнитт-лук",
-    "черемша",
-    "сельдерей",
-    "тархун",
-    "эстрагон",
-    "розмарин",
-    "тимьян",
-    "мята",
-    "мелисса",
-    "шалфей",
-    "душица",
-    "орегано",
-    "майоран",
-    "любисток",
-    "мангольд",
-    "мизуна",
 )
 
 PRICE_RE = re.compile(
@@ -97,13 +88,7 @@ RUSSIAN_MONTHS = {
 }
 
 CANONICAL_CROP_NAMES = (
-    ("лук зелёный", "Лук зеленый"),
-    ("лук зеленый", "Лук зеленый"),
-    ("лук-перо", "Лук зеленый"),
-    ("шнитт-лук", "Шнитт-лук"),
-    ("укроп", "Укроп"),
-    ("петрушка", "Петрушка"),
-    ("кинза", "Кинза"),
+    ("микрозелень", "Микрозелень"),
     ("базилик", "Базилик"),
     ("шпинат", "Шпинат"),
     ("руккола", "Руккола"),
@@ -112,26 +97,14 @@ CANONICAL_CROP_NAMES = (
     ("айсберг", "Салат айсберг"),
     ("романо", "Салат романо"),
     ("лолло", "Салат лолло"),
-    ("корн", "Корн"),
-    ("кресс", "Кресс-салат"),
-    ("щавель", "Щавель"),
     ("мята", "Мята"),
     ("мелисса", "Мелисса"),
-    ("розмарин", "Розмарин"),
-    ("тимьян", "Тимьян"),
-    ("тархун", "Тархун"),
-    ("эстрагон", "Эстрагон"),
-    ("сельдерей", "Сельдерей"),
-    ("черемша", "Черемша"),
-    ("шалфей", "Шалфей"),
-    ("душица", "Душица"),
-    ("орегано", "Орегано"),
-    ("майоран", "Майоран"),
-    ("любисток", "Любисток"),
-    ("мангольд", "Мангольд"),
-    ("мизуна", "Мизуна"),
-    ("микрозелень", "Микрозелень"),
-    ("зелень", "Зелень"),
+    ("кинза", "Кинза"),
+    ("петрушка", "Петрушка"),
+    ("укроп", "Укроп"),
+    ("лук зелёный", "Лук зеленый"),
+    ("лук зеленый", "Лук зеленый"),
+    ("лук-перо", "Лук зеленый"),
 )
 
 
@@ -270,9 +243,8 @@ def _request_url(url: str, *, allow_404: bool = False) -> Response:
     for verify in (True, False):
         for _ in range(2):
             try:
-                response = requests.get(
+                response = SESSION.get(
                     url,
-                    headers=REQUEST_HEADERS,
                     timeout=(15, max(REQUEST_TIMEOUT, 60)),
                     verify=verify,
                 )
@@ -353,6 +325,27 @@ def _deduplicate(items: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     return unique_items
 
 
+def _load_page(
+    *,
+    source_name: str,
+    base_url: str,
+    page: int,
+    page_builder: Callable[[str, int], str],
+    parser: Callable[[BeautifulSoup, str], list[dict[str, object]]],
+) -> tuple[int, list[dict[str, object]], bool]:
+    page_url = page_builder(base_url, page)
+    response = _request_url(page_url, allow_404=True)
+    if response.status_code == 404:
+        return page, [], True
+
+    soup = BeautifulSoup(response.text, "lxml")
+    page_items = parser(soup, page_url)
+    if not page_items:
+        return page, [], True
+
+    return page, page_items, False
+
+
 def _paginate_source(
     source_name: str,
     source_urls: list[str],
@@ -362,23 +355,40 @@ def _paginate_source(
     results: list[dict[str, object]] = []
 
     for base_url in source_urls:
-        page = 1
-        while True:
-            page_url = page_builder(base_url, page)
-            response = _request_url(page_url, allow_404=True)
-            if response.status_code == 404:
-                break
+        next_page = 1
+        should_stop = False
 
-            soup = BeautifulSoup(response.text, "html.parser")
-            page_items = parser(soup, page_url)
-            if not page_items:
-                break
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            while not should_stop:
+                batch_pages = list(range(next_page, next_page + MAX_WORKERS))
+                future_to_page = {
+                    executor.submit(
+                        _load_page,
+                        source_name=source_name,
+                        base_url=base_url,
+                        page=page,
+                        page_builder=page_builder,
+                        parser=parser,
+                    ): page
+                    for page in batch_pages
+                }
 
-            results.extend(page_items)
-            page += 1
+                batch_results: dict[int, tuple[list[dict[str, object]], bool]] = {}
+                for future in as_completed(future_to_page):
+                    page, page_items, stop_signal = future.result()
+                    batch_results[page] = (page_items, stop_signal)
+
+                for page in sorted(batch_pages):
+                    page_items, stop_signal = batch_results[page]
+                    if stop_signal:
+                        should_stop = True
+                        break
+                    results.extend(page_items)
+
+                next_page += MAX_WORKERS
 
     if not results:
-        raise RuntimeError(f"{source_name} pages were loaded, but no herb listings were parsed.")
+        raise RuntimeError(f"{source_name} pages were loaded, but no target herb listings were parsed.")
 
     return _deduplicate(results)
 
@@ -445,14 +455,11 @@ def _parse_b2b_trade_page(soup: BeautifulSoup, page_url: str) -> list[dict[str, 
         if price_value is None:
             continue
 
-        region = DEFAULT_REGION
-        date_text = container_text
-
         item = _build_price_item(
             crop_name=title,
             wholesale_price=price_value,
-            published_at=_parse_datetime(date_text),
-            region=region,
+            published_at=_parse_datetime(container_text),
+            region=DEFAULT_REGION,
             source="b2b.trade",
         )
         if item:
