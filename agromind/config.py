@@ -22,11 +22,10 @@ AGRORU_URLS = [
 ]
 
 NEWS_FEEDS = (
-    "https://www.agroinvestor.ru/feed/public-rast.xml",
-    "https://www.agroinvestor.ru/feed/public-jivot.xml",
-    "https://www.agroinvestor.ru/feed/public-food.xml",
-    "https://east-fruit.com/feed/",
-    "https://fermer.ru/feed/forum",
+    "https://www.agroinvestor.ru/rss/public-agronews.xml",
+    "https://www.agroinvestor.ru/rss/public-agroanalytics.xml",
+    "https://east-fruit.com/feed",
+    "https://fermer.ru/feed/forum/new",
 )
 
 DEFAULT_REGION = "Россия"

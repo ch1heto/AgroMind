@@ -232,6 +232,9 @@ def _build_price_item(
     if not _contains_herb_keyword(normalized_name):
         return None
 
+    if (datetime.utcnow() - published_at).days > 180:
+        return None
+
     return {
         "crop_name": normalized_name,
         "wholesale_price": wholesale_price,

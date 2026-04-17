@@ -91,13 +91,13 @@ def build_price_figure(history_frame: pd.DataFrame):
     chart_frame = history_frame.copy()
     chart_frame["series"] = chart_frame["crop_name"] + " | " + chart_frame["region"]
 
-    figure = px.line(
+    figure = px.scatter(
         chart_frame,
         x="timestamp",
         y="wholesale_price",
         color="series",
-        markers=True,
         title="Динамика оптовых цен",
+        opacity=0.7,
         labels={
             "timestamp": "Дата",
             "wholesale_price": "Цена, руб.",
@@ -115,7 +115,28 @@ def build_price_figure(history_frame: pd.DataFrame):
         template="plotly_dark",
         legend_title_text="Культура и регион",
         margin=dict(l=20, r=20, t=60, b=20),
-        hovermode="x unified",
+        hovermode="closest",
+    )
+    figure.update_traces(marker=dict(size=11))
+    return figure
+
+
+def build_boxplot_figure(history_frame: pd.DataFrame):
+    figure = px.box(
+        history_frame,
+        x="crop_name",
+        y="wholesale_price",
+        color="crop_name",
+        title="Распределение цен по культурам",
+        labels={
+            "crop_name": "Культура",
+            "wholesale_price": "Цена, руб.",
+        },
+    )
+    figure.update_layout(
+        template="plotly_dark",
+        legend_title_text="Культура",
+        margin=dict(l=20, r=20, t=60, b=20),
     )
     return figure
 
@@ -200,9 +221,15 @@ def render_dashboard_tabs() -> None:
 
         metrics_col1, metrics_col2, metrics_col3 = st.columns((1, 1, 1.2))
         with metrics_col1:
-            st.metric("Активных культур", int(analytics_snapshot["crop_name"].nunique()) if not analytics_snapshot.empty else 0)
+            st.metric(
+                "Активных культур",
+                int(analytics_snapshot["crop_name"].nunique()) if not analytics_snapshot.empty else 0,
+            )
         with metrics_col2:
-            st.metric("Активных регионов", int(analytics_snapshot["region"].nunique()) if not analytics_snapshot.empty else 0)
+            st.metric(
+                "Активных регионов",
+                int(analytics_snapshot["region"].nunique()) if not analytics_snapshot.empty else 0,
+            )
         with metrics_col3:
             st.caption(
                 f"Автообновление вкладок: каждые 30 секунд. Последний рендер: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -211,7 +238,23 @@ def render_dashboard_tabs() -> None:
         if history_frame.empty:
             st.info("По выбранным культурам пока нет исторических данных.")
         else:
-            st.plotly_chart(build_price_figure(history_frame), use_container_width=True)
+            top_left, top_right = st.columns((2, 1), gap="large")
+            with top_left:
+                st.plotly_chart(build_price_figure(history_frame), use_container_width=True)
+                st.plotly_chart(build_boxplot_figure(history_frame), use_container_width=True)
+            with top_right:
+                st.subheader("Сводка выборки")
+                st.caption("Точечный график показывает разреженность и кластеры цен, boxplot — медиану и разброс по культуре.")
+                if not analytics_snapshot.empty:
+                    summary_table = analytics_snapshot.rename(
+                        columns={
+                            "crop_name": "Культура",
+                            "region": "Регион",
+                            "published_at": "Дата публикации",
+                            "wholesale_price": "Оптовая цена, руб.",
+                        }
+                    )
+                    st.dataframe(summary_table, use_container_width=True, hide_index=True)
 
 
 def main() -> None:
