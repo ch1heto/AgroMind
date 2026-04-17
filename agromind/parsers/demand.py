@@ -28,14 +28,27 @@ PRICE_PATTERNS = (
     r"НМЦК[:\s]*([\d\s]+(?:[.,]\d+)?)",
     r"Цена контракта[:\s]*([\d\s]+(?:[.,]\d+)?)",
 )
-REGION_PATTERNS = (
-    r"(?:Регион поставки|Место поставки(?: товара, выполнения работы или оказания услуг)?|Субъект РФ)[:\s]*([^.;\n]+)",
-    r"\b(г\.\s*[А-ЯЁA-Z][^,.;\n]+)",
-    r"\b([А-ЯЁ][а-яё]+(?:ская|ский|ское)?\s+область)\b",
-    r"\b([А-ЯЁ][а-яё]+(?:ский)?\s+край)\b",
-    r"\b(Республика\s+[А-ЯЁ][а-яёA-ЯЁ\-\s]+)\b",
-    r"\b([А-ЯЁ][а-яёA-ЯЁ\-\s]+ автономный округ)\b",
-)
+REGION_MAPPING = {
+    "мск": "Москва", "москв": "Москва",
+    "спб": "Санкт-Петербург", "петербург": "Санкт-Петербург", "ленинград": "Ленинградская область",
+    "екб": "Свердловская область", "екатеринбург": "Свердловская область", "свердловск": "Свердловская область",
+    "члб": "Челябинская область", "челябинск": "Челябинская область",
+    "краснодар": "Краснодарский край", "кубань": "Краснодарский край",
+    "ростов": "Ростовская область",
+    "татарстан": "Республика Татарстан", "казань": "Республика Татарстан",
+    "новосиб": "Новосибирская область",
+    "нижегород": "Нижегородская область", "нижний новгород": "Нижегородская область",
+    "самар": "Самарская область",
+    "крым": "Республика Крым",
+    "воронеж": "Воронежская область",
+    "волгоград": "Волгоградская область",
+    "уфа": "Республика Башкортостан", "башкир": "Республика Башкортостан",
+    "перм": "Пермский край",
+    "омск": "Омская область",
+    "красноярск": "Красноярский край",
+    "россия": "Россия (Федеральный)",
+    "рф": "Россия (Федеральный)"
+}
 
 
 def _normalize_datetime(raw_value: Any) -> datetime | None:
@@ -89,15 +102,22 @@ def _extract_contract_price(text: str) -> float:
     return 0.0
 
 
-def _extract_region(title: str, description: str) -> str:
-    combined_text = f"{title}. {description}".strip()
+def _extract_region(text: str) -> str:
+    if not text:
+        return "Россия (Регион не указан)"
 
-    for pattern in REGION_PATTERNS:
-        match = re.search(pattern, combined_text, flags=re.IGNORECASE)
-        if match:
-            return match.group(1).strip(" .;,-")
+    text_lower = text.lower()
 
-    return "Не указан"
+    words = re.findall(r"\b\w+\b", text_lower)
+    for word in words:
+        if word in REGION_MAPPING:
+            return REGION_MAPPING[word]
+
+    for key, normalized_name in REGION_MAPPING.items():
+        if len(key) > 4 and key in text_lower:
+            return normalized_name
+
+    return "Россия (Регион не указан)"
 
 
 def fetch_demand_signals(crop_names: list[str]) -> list[dict[str, Any]]:
@@ -142,7 +162,7 @@ def fetch_demand_signals(crop_names: list[str]) -> list[dict[str, Any]]:
                 or datetime.utcnow()
             )
 
-            region = _extract_region(title, description)
+            region = _extract_region(f"{title} {description}")
             contract_price = _extract_contract_price(description)
 
             collected.append(

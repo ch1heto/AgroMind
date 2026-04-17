@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 from agromind.ai_analyzer import chat_with_ai
 from agromind.config import DEFAULT_HISTORY_DAYS
@@ -189,6 +190,8 @@ def render_chat_tab() -> None:
 
 @fragment_decorator(run_every="30s")
 def render_dashboard_tabs() -> None:
+    st_autorefresh(interval=5000, limit=100, key="data_refresh")
+
     try:
         crop_options = get_crop_filters()
         news_items = get_recent_news()
