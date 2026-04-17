@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from agromind.ai_analyzer import chat_with_ai
 from agromind.config import DEFAULT_HISTORY_DAYS
 from agromind.database import init_db
 from agromind.services import (
@@ -152,6 +153,40 @@ def build_boxplot_figure(history_frame: pd.DataFrame):
     return figure
 
 
+def render_chat_tab() -> None:
+    st.subheader("ИИ-Агроном")
+    user_region = st.text_input("Ваш регион", value="Москва", key="user_region_input")
+
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    user_text = st.chat_input("Спросите про маржинальность, цены, погоду или выбор культуры")
+    if not user_text:
+        return
+
+    history = list(st.session_state.chat_messages)
+    user_message = {"role": "user", "content": user_text}
+    st.session_state.chat_messages.append(user_message)
+
+    with st.chat_message("user"):
+        st.markdown(user_text)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Анализирую данные и климат..."):
+            answer = chat_with_ai(
+                user_message=user_text,
+                history=history,
+                user_region=user_region,
+            )
+        st.markdown(answer)
+
+    st.session_state.chat_messages.append({"role": "assistant", "content": answer})
+
+
 @fragment_decorator(run_every="30s")
 def render_dashboard_tabs() -> None:
     try:
@@ -173,7 +208,7 @@ def render_dashboard_tabs() -> None:
     if not st.session_state.selected_crops and crop_options:
         st.session_state.selected_crops = crop_options[:3]
 
-    tab1, tab2 = st.tabs(["Сводка и Новости", "Аналитика и Графики"])
+    tab1, tab2, tab3 = st.tabs(["Сводка и Новости", "Аналитика и Графики", "ИИ-Агроном (Чат)"])
 
     with tab1:
         col1, col2 = st.columns((1.1, 1), gap="large")
@@ -269,12 +304,15 @@ def render_dashboard_tabs() -> None:
                     )
                     st.dataframe(summary_table, use_container_width=True, hide_index=True)
 
+    with tab3:
+        render_chat_tab()
+
 
 def main() -> None:
     init_db()
 
     st.title("AgroMind")
-    st.caption("Дашборд по ценам на гидропонную зелень и профильным агроновостям.")
+    st.caption("Дашборд по ценам на гидропонную зелень, агроновостям и AI-аналитике.")
 
     with st.sidebar:
         st.title("AgroMind")
