@@ -24,7 +24,6 @@ AGRORU_URLS = [
 NEWS_FEEDS = (
     "https://www.agroinvestor.ru/rss/public-agronews.xml",
     "https://www.agroinvestor.ru/rss/public-agroanalytics.xml",
-    "https://east-fruit.com/feed",
     "https://fermer.ru/feed/forum/new",
 )
 

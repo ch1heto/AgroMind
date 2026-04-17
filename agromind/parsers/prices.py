@@ -26,6 +26,7 @@ from agromind.config import (
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 MAX_WORKERS = 5
+MAX_PAGES = 10
 
 SESSION = requests.Session()
 SESSION.headers.update({**REQUEST_HEADERS, "Connection": "keep-alive"})
@@ -369,7 +370,7 @@ def _paginate_source(
         should_stop = False
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            while not should_stop:
+            while not should_stop and next_page <= MAX_PAGES:
                 batch_pages = list(range(next_page, next_page + MAX_WORKERS))
                 future_to_page = {
                     executor.submit(
