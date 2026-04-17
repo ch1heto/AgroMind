@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import requests
@@ -12,60 +12,163 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "qwen3.5:9b"
 WEATHER_ERROR_TEXT = "Не удалось получить данные о погоде"
 
-VEGETATION_CYCLES = {
-    "Микрозелень": "7-10 дней",
-    "Лук зеленый": "20-30 дней",
-    "Руккола": "25-35 дней",
-    "Укроп": "30-40 дней",
-    "Кинза": "30-40 дней",
-    "Базилик": "30-40 дней",
-    "Салат": "35-45 дней",
-    "Шпинат": "30-45 дней",
-    "Салат айсберг": "45-60 дней",
-    "Петрушка": "40-60 дней",
-    "Мята": "45-60 дней",
+AGRO_HANDBOOK = {
+    "Базилик": {
+        "cycle_days": (30, 40),
+        "ph": "5.5-6.5",
+        "ec": "1.0-1.6",
+        "temperature_c": "20-25",
+        "humidity_pct": "40-60",
+    },
+    "Кинза": {
+        "cycle_days": (30, 40),
+        "ph": "6.0-6.7",
+        "ec": "1.2-1.8",
+        "temperature_c": "15-20",
+        "humidity_pct": "50-70",
+    },
+    "Лук зеленый": {
+        "cycle_days": (20, 30),
+        "ph": "6.0-7.0",
+        "ec": "1.4-1.8",
+        "temperature_c": "18-22",
+        "humidity_pct": "60-70",
+    },
+    "Микрозелень": {
+        "cycle_days": (7, 10),
+        "ph": "5.5-6.5",
+        "ec": "0.8-1.2",
+        "temperature_c": "20-24",
+        "humidity_pct": "50-60",
+    },
+    "Мята": {
+        "cycle_days": (45, 60),
+        "ph": "5.5-6.0",
+        "ec": "1.6-2.0",
+        "temperature_c": "18-22",
+        "humidity_pct": "70-80",
+    },
+    "Петрушка": {
+        "cycle_days": (40, 60),
+        "ph": "5.5-6.0",
+        "ec": "1.2-1.8",
+        "temperature_c": "15-20",
+        "humidity_pct": "50-70",
+    },
+    "Руккола": {
+        "cycle_days": (25, 35),
+        "ph": "6.0-6.5",
+        "ec": "1.2-1.8",
+        "temperature_c": "15-20",
+        "humidity_pct": "50-70",
+    },
+    "Салат": {
+        "cycle_days": (35, 45),
+        "ph": "5.5-6.0",
+        "ec": "0.8-1.2",
+        "temperature_c": "16-20",
+        "humidity_pct": "60-70",
+    },
+    "Салат айсберг": {
+        "cycle_days": (45, 60),
+        "ph": "5.5-6.5",
+        "ec": "1.0-1.5",
+        "temperature_c": "15-18",
+        "humidity_pct": "60-70",
+    },
+    "Укроп": {
+        "cycle_days": (30, 40),
+        "ph": "5.5-6.5",
+        "ec": "1.0-1.6",
+        "temperature_c": "15-20",
+        "humidity_pct": "50-70",
+    },
+    "Шпинат": {
+        "cycle_days": (30, 45),
+        "ph": "6.0-7.0",
+        "ec": "1.6-2.0",
+        "temperature_c": "15-20",
+        "humidity_pct": "50-70",
+    },
 }
 
 
-def _build_price_summary(df: pd.DataFrame) -> str:
-    if df.empty:
-        return "- В базе нет актуальных цен."
+def _normalize_region(value: str) -> str:
+    return " ".join(str(value or "").strip().lower().replace("ё", "е").split())
 
-    grouped = (
+
+def _has_local_region_match(region_value: str, user_region: str) -> bool:
+    normalized_region = _normalize_region(region_value)
+    normalized_user_region = _normalize_region(user_region)
+    if not normalized_region or not normalized_user_region:
+        return False
+    return normalized_user_region in normalized_region
+
+
+def _format_price_table(title: str, df: pd.DataFrame) -> str:
+    if df.empty:
+        return f"{title}:\n- Нет актуальных цен."
+
+    aggregated = (
         df.groupby("crop_name", as_index=False)["wholesale_price"]
-        .agg(median="median", lots="count", min="min", max="max")
-        .sort_values(["median", "lots"], ascending=[False, True])
+        .agg(median="median", min="min", max="max", lots="count")
+        .sort_values(["median", "lots"], ascending=[False, False])
     )
 
-    lines: list[str] = []
-    for row in grouped.itertuples(index=False):
+    lines = [f"{title}:"]
+    for row in aggregated.itertuples(index=False):
         lines.append(
             f"- {row.crop_name}: медиана {row.median:.2f} руб., "
-            f"активных лотов {int(row.lots)}, "
-            f"диапазон {row.min:.2f}-{row.max:.2f} руб."
+            f"мин {row.min:.2f} руб., макс {row.max:.2f} руб., "
+            f"лотов {int(row.lots)}."
+        )
+    return "\n".join(lines)
+
+
+def _build_price_context(df: pd.DataFrame, user_region: str) -> str:
+    if df.empty:
+        return (
+            "Локальные цены:\n- Нет актуальных цен.\n\n"
+            "Средняя выборка по РФ:\n- Нет актуальных цен."
         )
 
-    return "\n".join(lines)
+    local_mask = df["region"].fillna("").apply(
+        lambda region_value: _has_local_region_match(region_value, user_region)
+    )
+    local_df = df.loc[local_mask].copy()
+    national_df = df.copy()
+
+    local_title = f"Локальные цены ({(user_region or '').strip() or 'Москва'})"
+    local_prices = _format_price_table(local_title, local_df)
+    national_prices = _format_price_table("Средняя выборка по РФ", national_df)
+    return f"{local_prices}\n\n{national_prices}"
 
 
 def _build_news_summary() -> str:
     news_items = get_recent_news(limit=5)
     if not news_items:
-        return "- Свежих новостей в базе нет."
+        return "- Свежих новостей пока нет."
 
     lines: list[str] = []
     for item in news_items:
         published_at = item["published_at"].strftime("%Y-%m-%d %H:%M")
         lines.append(f"- {item['title']} ({published_at})")
-
     return "\n".join(lines)
 
 
-def _build_vegetation_reference() -> str:
-    return "\n".join(
-        f"- {crop}: {cycle}"
-        for crop, cycle in VEGETATION_CYCLES.items()
-    )
+def _build_agro_handbook_reference(today: datetime) -> str:
+    lines: list[str] = []
+    for crop_name, params in AGRO_HANDBOOK.items():
+        min_days, max_days = params["cycle_days"]
+        harvest_from = (today + timedelta(days=min_days)).strftime("%Y-%m-%d")
+        harvest_to = (today + timedelta(days=max_days)).strftime("%Y-%m-%d")
+        lines.append(
+            f"- {crop_name}: цикл {min_days}-{max_days} дней, "
+            f"если сеять сегодня, сбор ориентировочно {harvest_from}-{harvest_to}; "
+            f"pH {params['ph']}, EC {params['ec']}, "
+            f"t {params['temperature_c']}°C, H {params['humidity_pct']}%."
+        )
+    return "\n".join(lines)
 
 
 def _get_weather_forecast(region: str) -> str:
@@ -79,11 +182,11 @@ def _get_weather_forecast(region: str) -> str:
         response.raise_for_status()
         payload = response.json()
 
-        current_temp = (
-            payload.get("current_condition", [{}])[0].get("temp_C")
-        )
-        if current_temp in (None, ""):
-            raise ValueError("missing current temperature")
+        current_condition = payload.get("current_condition", [{}])[0]
+        current_temp = current_condition.get("temp_C")
+        current_humidity = current_condition.get("humidity")
+        if current_temp in (None, "") or current_humidity in (None, ""):
+            raise ValueError("missing current weather data")
 
         forecast_parts: list[str] = []
         for day in payload.get("weather", [])[:3]:
@@ -96,53 +199,53 @@ def _get_weather_forecast(region: str) -> str:
         if not forecast_parts:
             raise ValueError("missing forecast")
 
-        return f"Текущая: {current_temp}°C, Прогноз: " + ", ".join(forecast_parts)
+        return (
+            f"Регион: {normalized_region}. "
+            f"Сейчас {current_temp}°C, влажность {current_humidity}%. "
+            f"Прогноз температуры на 3 дня: {', '.join(forecast_parts)}."
+        )
     except (requests.exceptions.RequestException, ValueError, KeyError, IndexError):
         return WEATHER_ERROR_TEXT
 
 
 def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> str:
-    current_date = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
     normalized_region = (user_region or "").strip() or "Москва"
 
-    df = get_latest_prices_frame()
-    price_summary = _build_price_summary(df)
-    news_summary = _build_news_summary()
+    price_df = get_latest_prices_frame()
     weather_summary = _get_weather_forecast(normalized_region)
-    vegetation_reference = _build_vegetation_reference()
+    agro_handbook_summary = _build_agro_handbook_reference(now)
+    price_context = _build_price_context(price_df, normalized_region)
+    news_summary = _build_news_summary()
 
     system_prompt = (
-        "Ты — профессиональная экспертная система в роли ИИ-агронома и B2B бизнес-аналитика. "
-        "Стиль ответов: официально-деловой, аналитический, профессиональный. "
-        "Использование любых эмодзи, смайликов и декоративных символов запрещено. "
-        "Ты обязан опираться только на переданный контекст: календарную дату, регион, погоду, цены и новости. "
-        "Текущая дата служит точкой отсчета для календаря посадок, сроков посева и даты выхода на срез. "
-        "При расчете маржинальности строго учитывай циклы вегетации и дни до среза:\n"
-        f"{vegetation_reference}\n"
-        "Если пользователь использует термины 'сити-ферма', 'городская ферма', 'подвал', 'гараж' или 'помещение', "
-        "объясняй, что внешняя погода влияет прежде всего на энергозатраты климатического оборудования. "
-        "Если пользователь использует термин 'теплица', указывай на прямые риски для вегетации от внешней температуры. "
-        "Если тип помещения не ясен, ты обязан вежливо уточнить условия выращивания "
-        "(температура, влажность, тип освещения), прежде чем давать финальный совет. "
-        "Анализируй погодные условия относительно целевого диапазона 18-22°C. "
-        "Если в регионе холодно, обязательно напоминай о затратах на отопление теплиц или климатического оборудования и их влиянии на маржу. "
-        "Если данных недостаточно, прямо укажи, чего не хватает, и не придумывай факты."
+        "Ты — опытный агроном-консультант B2B. "
+        "ЗАПРЕЩЕНО использовать эмодзи. "
+        "Говори простым, человеческим, профессиональным языком. "
+        "Никаких роботизированных фраз вроде 'Данные отсутствуют'.\n\n"
+        "АНАЛИЗ ПОМЕЩЕНИЯ: Если пользователь пишет 'сити-ферма', 'в помещении' — "
+        "внешняя погода не важна, просто назови идеальные условия ВНУТРИ "
+        "(из справочника AGRO_HANDBOOK). Если 'теплица' — сопоставляй с погодой на улице. "
+        "Если тип не указан — вежливо уточни.\n\n"
+        "АГРО-ДАННЫЕ: Опирайся на переданный AGRO_HANDBOOK "
+        "(циклы, pH, EC, температура, влажность). "
+        "Считай дату сбора урожая от сегодняшней даты.\n\n"
+        "РЫНОК: Если есть 'Локальные цены', опирайся на них. "
+        "Если их нет, используй 'Среднюю выборку по РФ' как ориентир. "
+        "Рекомендуй маржинальные и быстрые культуры."
     )
 
-    context_message = (
-        f"Текущая дата: {current_date}\n"
-        f"Регион пользователя: {normalized_region}\n"
-        f"Погода и прогноз: {weather_summary}\n\n"
-        "Агрегированная таблица цен из БД:\n"
-        f"{price_summary}\n\n"
-        "Свежие новости рынка:\n"
-        f"{news_summary}"
+    user_prompt = (
+        f"Текущая дата: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Регион пользователя: {normalized_region}\n\n"
+        f"Погода:\n{weather_summary}\n\n"
+        f"AGRO_HANDBOOK:\n{agro_handbook_summary}\n\n"
+        f"{price_context}\n\n"
+        f"Свежие новости:\n{news_summary}\n\n"
+        f"Запрос пользователя:\n{user_message}"
     )
 
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "system", "content": context_message},
-    ]
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
     for item in history:
         role = str(item.get("role", "")).strip()
@@ -150,7 +253,7 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> st
         if role in {"user", "assistant"} and content:
             messages.append({"role": role, "content": content})
 
-    messages.append({"role": "user", "content": user_message})
+    messages.append({"role": "user", "content": user_prompt})
 
     try:
         response = requests.post(
