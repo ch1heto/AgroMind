@@ -16,23 +16,31 @@ logging.basicConfig(
 logger = logging.getLogger("agromind.worker")
 
 
-def collect_once() -> None:
+def job() -> None:
+    print("🔄 Начинаю фоновый сбор данных (батчами)...")
     result = refresh_data()
+    print(
+        "✅ Сбор данных завершен: "
+        f"новостей={result['news_added']}, "
+        f"цен={result['prices_added']}, "
+        f"тендеров={result['demand_added']}"
+    )
     logger.info(
-        "Cycle finished: news_added=%s, prices_added=%s, errors=%s",
+        "Cycle finished: news_added=%s, prices_added=%s, demand_added=%s, errors=%s",
         result["news_added"],
         result["prices_added"],
+        result["demand_added"],
         result["errors"],
     )
 
 
 def main() -> None:
     init_db()
-    collect_once()
+    job()
 
     scheduler = BlockingScheduler()
     scheduler.add_job(
-        collect_once,
+        job,
         trigger="interval",
         minutes=max(WORKER_INTERVAL_MINUTES, 1),
         id="agromind-refresh",

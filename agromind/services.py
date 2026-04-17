@@ -114,6 +114,13 @@ def refresh_data() -> dict[str, Any]:
             result["news_added"] = save_news(session, news_items)
             session.commit()
 
+        if demand_items:
+            try:
+                result["demand_added"] = save_demand_signals(session, demand_items)
+                session.commit()
+            except Exception as exc:
+                result["errors"].append(f"Demand save error: {exc}")
+
         try:
             for batch in fetch_all_prices():
                 if not batch:
@@ -122,13 +129,6 @@ def refresh_data() -> dict[str, Any]:
                 session.commit()
         except Exception as exc:
             result["errors"].append(f"Price parsing error: {exc}")
-
-        if demand_items:
-            try:
-                result["demand_added"] = save_demand_signals(session, demand_items)
-                session.commit()
-            except Exception as exc:
-                result["errors"].append(f"Demand save error: {exc}")
 
     return result
 
