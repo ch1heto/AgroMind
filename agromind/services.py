@@ -8,7 +8,7 @@ from sqlalchemy import Select, and_, desc, func, select
 from sqlalchemy.orm import Session
 
 from agromind.database import init_db, session_scope
-from agromind.models import DemandSignal, News, PriceSummary
+from agromind.models import DemandSignal, FarmProfile, News, PriceSummary
 from agromind.parsers.demand import fetch_demand_signals
 from agromind.parsers.news import fetch_news_from_feeds
 from agromind.parsers.prices import fetch_all_prices
@@ -262,6 +262,41 @@ def get_latest_demand_signals_frame() -> pd.DataFrame:
             for row in rows
         ]
     )
+
+
+def get_farm_profile() -> dict[str, float]:
+    init_db()
+    with session_scope() as session:
+        profile = session.get(FarmProfile, 1)
+
+    if profile is None:
+        return {
+            "total_area_sqm": 0.0,
+            "energy_price_kwh": 0.0,
+        }
+
+    return {
+        "total_area_sqm": float(profile.total_area_sqm or 0.0),
+        "energy_price_kwh": float(profile.energy_price_kwh or 0.0),
+    }
+
+
+def save_farm_profile(area: float, energy_price: float) -> None:
+    init_db()
+    with session_scope() as session:
+        profile = session.get(FarmProfile, 1)
+        if profile is None:
+            profile = FarmProfile(
+                id=1,
+                total_area_sqm=float(area or 0.0),
+                energy_price_kwh=float(energy_price or 0.0),
+                updated_at=datetime.utcnow(),
+            )
+            session.add(profile)
+        else:
+            profile.total_area_sqm = float(area or 0.0)
+            profile.energy_price_kwh = float(energy_price or 0.0)
+            profile.updated_at = datetime.utcnow()
 
 
 def get_crop_filters() -> list[str]:

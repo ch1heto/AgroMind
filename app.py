@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -10,10 +11,12 @@ from agromind.config import DATA_DIR, WORKER_INTERVAL_MINUTES
 from agromind.database import init_db
 from agromind.services import (
     get_crop_filters,
+    get_farm_profile,
     get_latest_demand_signals_frame,
     get_latest_prices_frame,
     get_recent_news,
     refresh_data,
+    save_farm_profile,
 )
 
 
@@ -88,7 +91,7 @@ def render_news_feed(news_items: list[dict[str, object]]) -> None:
         )
 
 
-def render_chat_tab() -> None:
+def render_chat_tab(farm_profile: dict[str, float]) -> None:
     st.subheader("ИИ-Агроном")
     user_region = st.text_input("Ваш регион", value="Москва", key="user_region_input")
 
@@ -116,6 +119,7 @@ def render_chat_tab() -> None:
                 user_message=user_text,
                 history=history,
                 user_region=user_region,
+                farm_profile=farm_profile,
             )
         st.markdown(answer)
 
@@ -141,10 +145,10 @@ def _render_worker_health() -> None:
     error = payload.get("error")
 
     try:
-        from datetime import datetime
-
         last_update = datetime.fromisoformat(last_update_raw)
-        age_minutes = int((datetime.utcnow() - last_update).total_seconds() / 60)
+        if last_update.tzinfo is None:
+            last_update = last_update.replace(tzinfo=timezone.utc)
+        age_minutes = int((datetime.now(timezone.utc) - last_update).total_seconds() / 60)
         age_str = f"{age_minutes} мин назад"
     except Exception:
         age_minutes = None
@@ -177,7 +181,7 @@ def _render_worker_health() -> None:
 
 
 @fragment_decorator(run_every="30s")
-def render_dashboard_tabs() -> None:
+def render_dashboard_tabs(farm_profile: dict[str, float]) -> None:
     st_autorefresh(interval=5000, limit=100, key="data_refresh")
 
     try:
@@ -204,7 +208,7 @@ def render_dashboard_tabs() -> None:
                     "wholesale_price": "Оптовая цена, руб.",
                 }
             )
-            st.dataframe(prices_frame, use_container_width=True, hide_index=True)
+            st.dataframe(prices_frame, width="stretch", hide_index=True)
 
     with tab2:
         st.subheader("Госзакупки")
@@ -220,25 +224,46 @@ def render_dashboard_tabs() -> None:
                     "url": "Ссылка",
                 }
             )
-            st.dataframe(demand_frame, use_container_width=True, hide_index=True)
+            st.dataframe(demand_frame, width="stretch", hide_index=True)
 
     with tab3:
         st.subheader("Новости")
         render_news_feed(news_items)
 
     with tab4:
-        render_chat_tab()
+        render_chat_tab(farm_profile)
 
 
 def main() -> None:
     init_db()
+    farm_profile = get_farm_profile()
 
     st.title("AgroMind")
     st.caption("Дашборд по ценам на гидропонную зелень, агроновостям, госзакупкам и AI-аналитике.")
 
     with st.sidebar:
         st.title("AgroMind")
-        if st.button("Обновить данные сейчас", use_container_width=True, type="primary"):
+        with st.expander("⚙️ Моя Сити-Ферма", expanded=False):
+            farm_area = st.number_input(
+                "Площадь посадки (кв.м)",
+                min_value=0.0,
+                value=float(farm_profile["total_area_sqm"]),
+                step=1.0,
+                key="farm_area_input",
+            )
+            energy_price = st.number_input(
+                "Тариф на Электроэнергию (руб/кВт*ч)",
+                min_value=0.0,
+                value=float(farm_profile["energy_price_kwh"]),
+                step=0.1,
+                key="farm_energy_input",
+            )
+            if st.button("Сохранить профиль", width="stretch"):
+                save_farm_profile(area=farm_area, energy_price=energy_price)
+                farm_profile = get_farm_profile()
+                st.success("Профиль фермы сохранен.")
+
+        if st.button("Обновить данные сейчас", width="stretch", type="primary"):
             with st.spinner("Парсинг новостей, тендеров и ценовых площадок..."):
                 result = refresh_data()
 
@@ -255,7 +280,7 @@ def main() -> None:
 
         _render_worker_health()
 
-    render_dashboard_tabs()
+    render_dashboard_tabs(farm_profile)
 
 
 if __name__ == "__main__":

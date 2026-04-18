@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Float, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -47,3 +47,16 @@ class DemandSignal(Base):
     contract_price: Mapped[float] = mapped_column(Float, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     url: Mapped[str] = mapped_column(String(1000), nullable=False, unique=True)
+
+
+class FarmProfile(Base):
+    __tablename__ = "farm_profile"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    total_area_sqm: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    energy_price_kwh: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )

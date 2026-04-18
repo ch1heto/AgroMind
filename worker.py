@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -36,7 +36,7 @@ def _write_health(status: str, error: str | None = None) -> None:
 
     payload = {
         "status": status,
-        "last_update": datetime.utcnow().isoformat(),
+        "last_update": datetime.now(timezone.utc).isoformat(),
         "error": error,
     }
     try:

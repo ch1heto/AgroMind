@@ -23,8 +23,8 @@ DEMAND_HEADERS = {
     "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
 }
 
-# Увеличен с 5 до 20 сек — zakupki.gov.ru отвечает медленно
-DEMAND_REQUEST_TIMEOUT = 20
+# Ограничиваем время ожидания, чтобы парсер не подвисал на каждой культуре
+DEMAND_REQUEST_TIMEOUT = 8
 
 # Защита от слишком большого тела ответа (RSS с мегабайтами мусора)
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -182,7 +182,7 @@ def fetch_demand_signals(crop_names: list[str]) -> list[dict[str, Any]]:
                 or _normalize_datetime(entry.get("updated_parsed"))
                 or _normalize_datetime(entry.get("published"))
                 or _normalize_datetime(entry.get("updated"))
-                or datetime.utcnow()
+                or datetime.now(timezone.utc)
             )
 
             region = _extract_region(f"{title} {description}")

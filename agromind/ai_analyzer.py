@@ -34,6 +34,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "цвет листьев (пожелтение = дефицит N), запах раствора, pH и EC каждые 2 дня",
         "harvest_sign": "высота 15–20 см, до начала цветения",
         "margin_note": "высокомаржинальная, быстрый оборот",
+        "yield_kg_per_sqm": 2.2,
+        "power_kw_per_sqm": 24.0,
+        "seed_cost_per_sqm": 180.0,
+        "nutrition_cost_per_sqm": 95.0,
     },
     "Кинза": {
         "cycle_days": (30, 40),
@@ -48,6 +52,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "влажность субстрата, отсутствие полегания, ровный рост",
         "harvest_sign": "высота 20–25 см, до стрелкования",
         "margin_note": "стабильный спрос, средняя маржа",
+        "yield_kg_per_sqm": 1.8,
+        "power_kw_per_sqm": 18.0,
+        "seed_cost_per_sqm": 120.0,
+        "nutrition_cost_per_sqm": 80.0,
     },
     "Лук зеленый": {
         "cycle_days": (20, 30),
@@ -62,6 +70,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "пожелтение кончиков (избыток соли), равномерность роста",
         "harvest_sign": "высота 25–30 см",
         "margin_note": "быстрый цикл, хорошая оборачиваемость",
+        "yield_kg_per_sqm": 3.4,
+        "power_kw_per_sqm": 16.0,
+        "seed_cost_per_sqm": 140.0,
+        "nutrition_cost_per_sqm": 75.0,
     },
     "Микрозелень": {
         "cycle_days": (7, 10),
@@ -76,6 +88,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "влажность мата, отсутствие плесени, равномерность проростков",
         "harvest_sign": "семядольные листья раскрыты, первая пара настоящих листьев только начинается",
         "margin_note": "самый короткий цикл, максимальная оборачиваемость",
+        "yield_kg_per_sqm": 1.4,
+        "power_kw_per_sqm": 7.0,
+        "seed_cost_per_sqm": 260.0,
+        "nutrition_cost_per_sqm": 35.0,
     },
     "Мята": {
         "cycle_days": (45, 60),
@@ -90,6 +106,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "влажность воздуха, состояние корней (гниль при застое), аромат",
         "harvest_sign": "побеги 15–20 см, срез над 2-м узлом",
         "margin_note": "длинный цикл, нишевый спрос, высокая цена",
+        "yield_kg_per_sqm": 2.6,
+        "power_kw_per_sqm": 32.0,
+        "seed_cost_per_sqm": 210.0,
+        "nutrition_cost_per_sqm": 120.0,
     },
     "Петрушка": {
         "cycle_days": (40, 60),
@@ -104,6 +124,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "цвет листьев, равномерность роста, EC раствора",
         "harvest_sign": "высота 20–25 см, листья насыщенно-зелёные",
         "margin_note": "долгое прорастание, но стабильный спрос",
+        "yield_kg_per_sqm": 2.0,
+        "power_kw_per_sqm": 26.0,
+        "seed_cost_per_sqm": 130.0,
+        "nutrition_cost_per_sqm": 90.0,
     },
     "Руккола": {
         "cycle_days": (25, 35),
@@ -118,6 +142,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "горечь листьев нарастает при перегреве — следи за t°, аромат",
         "harvest_sign": "высота 10–15 см, до появления стрелки",
         "margin_note": "ресторанный сегмент, премиальная цена",
+        "yield_kg_per_sqm": 1.7,
+        "power_kw_per_sqm": 18.0,
+        "seed_cost_per_sqm": 150.0,
+        "nutrition_cost_per_sqm": 70.0,
     },
     "Салат": {
         "cycle_days": (35, 45),
@@ -132,6 +160,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "краевой ожог листьев (недостаток Ca), равномерность розетки",
         "harvest_sign": "розетка диаметром 20–25 см",
         "margin_note": "высокий объёмный спрос, госзакупки",
+        "yield_kg_per_sqm": 3.1,
+        "power_kw_per_sqm": 26.0,
+        "seed_cost_per_sqm": 110.0,
+        "nutrition_cost_per_sqm": 85.0,
     },
     "Салат айсберг": {
         "cycle_days": (45, 60),
@@ -146,6 +178,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "формирование кочана, краевой ожог",
         "harvest_sign": "кочан плотный, диаметр 15–20 см",
         "margin_note": "крупные контракты HoReCa и сети",
+        "yield_kg_per_sqm": 4.2,
+        "power_kw_per_sqm": 30.0,
+        "seed_cost_per_sqm": 135.0,
+        "nutrition_cost_per_sqm": 100.0,
     },
     "Укроп": {
         "cycle_days": (30, 40),
@@ -160,6 +196,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "пожелтение (дефицит Mg), равномерность всходов",
         "harvest_sign": "высота 25–30 см, до зонтика",
         "margin_note": "массовый спрос, конкурентная цена",
+        "yield_kg_per_sqm": 2.3,
+        "power_kw_per_sqm": 20.0,
+        "seed_cost_per_sqm": 105.0,
+        "nutrition_cost_per_sqm": 72.0,
     },
     "Шпинат": {
         "cycle_days": (30, 45),
@@ -174,6 +214,10 @@ AGRO_HANDBOOK: dict[str, dict] = {
         "daily_checks": "горечь нарастает при длинном дне >14 ч — строго соблюдай световой режим",
         "harvest_sign": "5–6 настоящих листьев, высота 15–20 см",
         "margin_note": "спрос со стороны HoReCa, диетпитание",
+        "yield_kg_per_sqm": 2.8,
+        "power_kw_per_sqm": 22.0,
+        "seed_cost_per_sqm": 145.0,
+        "nutrition_cost_per_sqm": 88.0,
     },
 }
 
@@ -360,6 +404,10 @@ def _build_handbook_context(today: datetime) -> str:
             f"    Освещение: {p['light_hours']} ч/сутки\n"
             f"    Полив: {p['water_l_per_sqm_day']} л/м²/сутки\n"
             f"    Смена раствора: каждые {p['solution_change_days']} дней (0 = не применимо)\n"
+            f"    Урожайность: {p['yield_kg_per_sqm']} кг/м² за цикл\n"
+            f"    Электроэнергия: {p['power_kw_per_sqm']} кВт*ч/м² за цикл\n"
+            f"    Семена и субстрат: {p['seed_cost_per_sqm']} руб/м² за цикл\n"
+            f"    Питание: {p['nutrition_cost_per_sqm']} руб/м² за цикл\n"
             f"    Ежедневный контроль: {p['daily_checks']}\n"
             f"    Признак готовности к срезу: {p['harvest_sign']}\n"
             f"    Коммерческая заметка: {p['margin_note']}"
@@ -384,6 +432,9 @@ SYSTEM_PROMPT = """/no_think
 5. При рекомендации культуры ВСЕГДА указывай: дату сбора, текущую цену, тренд, наличие тендера.
 6. Если пользователь спрашивает про ежедневный уход — давай пошаговый чек-лист с конкретными действиями.
 7. Никогда не повторяй вопрос пользователя.
+8. Ты работаешь в двух режимах.
+РЕЖИМ КАЛЬКУЛЯТОРА: Если пользователь говорит 'У меня есть X площади', рассчитай потенциальную выручку, вычти операционные расходы (OPEX = свет + семена + питание из AGRO_HANDBOOK) и назови чистую прибыль. Учитывай стоимость кВт/ч из FARM_STATE.
+РЕЖИМ СОВЕТНИКА: Если пользователь говорит 'Хочу заработать Y рублей', иди от обратного. Вычисли маржинальность 1 кв.м для самых выгодных культур по текущим рыночным ценам. Раздели желаемую прибыль на маржу с 1 кв.м, чтобы сказать пользователю, СКОЛЬКО квадратных метров ему нужно засеять для достижения цели. Если это больше его текущей площади из FARM_STATE, предложи разбить цель на несколько циклов.
 
 ФОРМАТ ОТВЕТА (строго):
 — Короткий вывод (1–2 предложения, главная мысль)
@@ -396,7 +447,8 @@ SYSTEM_PROMPT = """/no_think
   Б) Какие культуры подходят по условиям (t°, pH, EC из справочника)?
   В) Какая цена сейчас и какой тренд (рост/падение)?
   Г) Есть ли тендер — это приоритет?
-  Д) Сформировать конкретный ответ с датами и числами.
+  Д) Посчитать экономику 1 кв.м и всей фермы, если хватает данных из FARM_STATE и AGRO_HANDBOOK.
+  Е) Сформировать конкретный ответ с датами и числами.
 """
 
 
@@ -404,15 +456,24 @@ SYSTEM_PROMPT = """/no_think
 # Основная функция чата
 # ---------------------------------------------------------------------------
 
-def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> str:
+def chat_with_ai(user_message: str, history: list[dict], user_region: str, farm_profile: dict) -> str:
     now = datetime.now()
     region = (user_region or "").strip() or "Москва"
+    farm_area = float((farm_profile or {}).get("total_area_sqm", 0.0) or 0.0)
+    energy_price = float((farm_profile or {}).get("energy_price_kwh", 0.0) or 0.0)
 
     weather = _get_weather_forecast(region)
     prices_block = _build_price_trend_context(region)
     demand_block = _build_demand_context(region)
     news_block = _build_news_context()
     handbook_block = _build_handbook_context(now)
+    farm_state_block = (
+        "<FARM_STATE>\n"
+        f"  total_area_sqm: {farm_area}\n"
+        f"  energy_price_kwh: {energy_price}\n"
+        "</FARM_STATE>"
+    )
+    system_prompt = f"{SYSTEM_PROMPT}\n\n{farm_state_block}"
 
     # Пользовательский промпт — структурированный контекст + вопрос
     user_prompt = (
@@ -420,6 +481,7 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> st
         f"Дата и время: {now.strftime('%Y-%m-%d %H:%M')}\n"
         f"Регион: {region}\n"
         f"<WEATHER>{weather}</WEATHER>\n\n"
+        f"{farm_state_block}\n\n"
         f"{handbook_block}\n\n"
         f"{prices_block}\n\n"
         f"{demand_block}\n\n"
@@ -428,7 +490,7 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> st
         f"<QUESTION>{user_message}</QUESTION>"
     )
 
-    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
     # История — только последние 6 сообщений чтобы не раздувать контекст
     for item in history[-6:]:

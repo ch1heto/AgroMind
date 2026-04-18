@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 from sqlalchemy import create_engine, event, text
@@ -80,7 +80,7 @@ def purge_old_records(
 
     Возвращает словарь с количеством удалённых строк по каждой таблице.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     deleted: dict[str, int] = {}
 
     with session_scope() as session:
