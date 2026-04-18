@@ -54,10 +54,13 @@ def _acquire_lock() -> bool:
             os.kill(pid, 0)
             logger.warning("Worker already running with PID %s. Exiting.", pid)
             return False
-        except (ProcessLookupError, ValueError):
+        except ValueError:
             # Процесс мёртв — зачищаем старый замок
             logger.warning("Stale lock file found. Removing.")
             LOCK_FILE.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Worker already running or lock is owned by another process. Exiting.")
+            return False
 
     LOCK_FILE.write_text(str(os.getpid()))
     return True

@@ -105,8 +105,7 @@ def purge_old_records(
         )
         deleted["news"] = result.rowcount
 
-        # VACUUM освобождает место на диске после массового удаления
-        # Выполняется вне транзакции
-        session.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
 
     return deleted

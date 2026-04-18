@@ -47,7 +47,7 @@ Write-Host "Installing dependencies from $requirementsPath"
 & $venvPython -m pip install --upgrade -r $requirementsPath
 
 Write-Host "Verifying required packages"
-& $venvPython -c "import influxdb_client, plotly, apscheduler, streamlit_autorefresh"
+& $venvPython -c "import plotly, apscheduler, streamlit_autorefresh"
 
 Write-Host ""
 Write-Host "Environment is ready."
