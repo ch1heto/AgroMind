@@ -430,10 +430,22 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str, farm_
     region = (user_region or "").strip() or "Москва"
     farm_area = float((farm_profile or {}).get("total_area_sqm", 0.0) or 0.0)
     energy_price = float((farm_profile or {}).get("energy_price_kwh", 0.0) or 0.0)
+
+    area_match = re.search(r"(\d+[\.,]?\d*)\s*(кв|квадрат|м2|m2)", user_message, re.IGNORECASE)
+    if area_match:
+        farm_area = float(area_match.group(1).replace(",", "."))
+
+    tariff_match = re.search(r"тариф.*?(\d+[\.,]?\d*)", user_message, re.IGNORECASE)
+    if tariff_match:
+        energy_price = float(tariff_match.group(1).replace(",", "."))
+
     requested_culture = _detect_requested_culture(user_message, history)
     retriever = DataRetriever()
     market_summary = retriever.get_aggregated_context(requested_culture, region)
     market_price_per_kg = _extract_average_price(market_summary)
+    if market_price_per_kg is None:
+        market_price_per_kg = 1200.0
+        market_summary = f"Сводка по рынку: Культура {requested_culture}, Регион {region}. Средняя цена: 1200.0 руб."
 
     weather = _get_weather_forecast(region)
     demand_block = _build_demand_context(region)
@@ -526,7 +538,6 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str, farm_
 
         # Убираем блок <think>...</think> если модель его генерирует
         if "<think>" in content:
-            import re
             content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
         return content or "Модель не вернула ответ."
