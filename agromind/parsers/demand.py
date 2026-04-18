@@ -22,6 +22,13 @@ DEMAND_HEADERS = {
     "User-Agent": DEFAULT_USER_AGENT,
     "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
 }
+
+# Увеличен с 5 до 20 сек — zakupki.gov.ru отвечает медленно
+DEMAND_REQUEST_TIMEOUT = 20
+
+# Защита от слишком большого тела ответа (RSS с мегабайтами мусора)
+MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MB
+
 PRICE_PATTERNS = (
     r"Начальная\s*\(максимальная\)\s*цена\s*контракта[:\s]*([\d\s]+(?:[.,]\d+)?)",
     r"Начальная цена контракта[:\s]*([\d\s]+(?:[.,]\d+)?)",
@@ -46,8 +53,11 @@ REGION_MAPPING = {
     "перм": "Пермский край",
     "омск": "Омская область",
     "красноярск": "Красноярский край",
+    "новосибирск": "Новосибирская область",
+    "саратов": "Саратовская область",
+    "тюмень": "Тюменская область",
     "россия": "Россия (Федеральный)",
-    "рф": "Россия (Федеральный)"
+    "рф": "Россия (Федеральный)",
 }
 
 
@@ -131,10 +141,23 @@ def fetch_demand_signals(crop_names: list[str]) -> list[dict[str, Any]]:
             response = requests.get(
                 rss_url,
                 headers=DEMAND_HEADERS,
-                timeout=5,
+                timeout=DEMAND_REQUEST_TIMEOUT,
+                stream=True,
             )
             response.raise_for_status()
-            parsed_feed = feedparser.parse(response.content)
+
+            # Защита от огромных ответов
+            content = b""
+            for chunk in response.iter_content(chunk_size=65536):
+                content += chunk
+                if len(content) > MAX_RESPONSE_BYTES:
+                    logger.warning("RSS response too large for %s, truncating", crop_name)
+                    break
+
+            parsed_feed = feedparser.parse(content)
+        except requests.exceptions.Timeout:
+            logger.warning("Demand RSS timeout (%ss) for %s", DEMAND_REQUEST_TIMEOUT, crop_name)
+            continue
         except requests.exceptions.RequestException as exc:
             logger.warning("Demand RSS request failed for %s: %s", crop_name, exc)
             continue

@@ -446,6 +446,7 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str) -> st
                 "model": OLLAMA_MODEL,
                 "messages": messages,
                 "stream": False,
+                "keep_alive": "1h",
                 "options": {
                     # Снижаем температуру — меньше «творчества», больше точности
                     "temperature": 0.3,

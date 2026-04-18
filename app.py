@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from agromind.ai_analyzer import chat_with_ai
+from agromind.config import DATA_DIR, WORKER_INTERVAL_MINUTES
 from agromind.database import init_db
 from agromind.services import (
     get_crop_filters,
@@ -119,6 +122,60 @@ def render_chat_tab() -> None:
     st.session_state.chat_messages.append({"role": "assistant", "content": answer})
 
 
+def _render_worker_health() -> None:
+    """Показывает статус фонового воркера в сайдбаре."""
+    health_file = DATA_DIR / "worker_health.json"
+
+    if not health_file.exists():
+        st.sidebar.warning("Воркер не запущен или ещё не записал статус.")
+        return
+
+    try:
+        payload = json.loads(health_file.read_text())
+    except Exception:
+        st.sidebar.error("Не удалось прочитать статус воркера.")
+        return
+
+    status = payload.get("status", "unknown")
+    last_update_raw = payload.get("last_update", "")
+    error = payload.get("error")
+
+    try:
+        from datetime import datetime
+
+        last_update = datetime.fromisoformat(last_update_raw)
+        age_minutes = int((datetime.utcnow() - last_update).total_seconds() / 60)
+        age_str = f"{age_minutes} мин назад"
+    except Exception:
+        age_minutes = None
+        age_str = last_update_raw
+
+    if status == "ok":
+        st.sidebar.success(f"Воркер: активен ({age_str})")
+    elif status == "running":
+        st.sidebar.info(f"Воркер: сбор данных... ({age_str})")
+    elif status == "error":
+        st.sidebar.error(f"Воркер: ошибка ({age_str})")
+        if error:
+            with st.sidebar.expander("Подробности ошибки"):
+                st.code(error)
+    elif status == "crash":
+        st.sidebar.error(f"Воркер упал: {error}")
+    elif status == "stopped":
+        st.sidebar.warning("Воркер остановлен.")
+    else:
+        st.sidebar.warning(f"Воркер: статус неизвестен ({status})")
+
+    try:
+        if age_minutes is not None and age_minutes > (WORKER_INTERVAL_MINUTES * 3):
+            st.sidebar.warning(
+                f"Воркер не обновлялся {age_minutes} мин. "
+                "Возможно, процесс завис или остановился."
+            )
+    except Exception:
+        pass
+
+
 @fragment_decorator(run_every="30s")
 def render_dashboard_tabs() -> None:
     st_autorefresh(interval=5000, limit=100, key="data_refresh")
@@ -195,6 +252,8 @@ def main() -> None:
             if result["errors"]:
                 for error in result["errors"]:
                     st.error(error)
+
+        _render_worker_health()
 
     render_dashboard_tabs()
 
