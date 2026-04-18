@@ -8,3 +8,4 @@ feedparser
 pandas
 sqlalchemy
 apscheduler
+influxdb-client
