@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-import pandas as pd
 import requests
 
+from agromind.rag_retriever import DataRetriever
 from agromind.services import (
     get_latest_demand_signals_frame,
-    get_latest_prices_frame,
-    get_price_history_frame,
     get_recent_news,
 )
 
@@ -294,62 +292,19 @@ def _region_match(region_value: str, user_region: str) -> bool:
     ur = _normalize_region(user_region)
     return bool(rv and ur and ur in rv)
 
+def _detect_requested_culture(user_message: str, history: list[dict]) -> str:
+    searchable_text = " ".join(
+        [
+            *(str(item.get("content", "")) for item in history[-6:]),
+            user_message,
+        ]
+    ).lower()
 
-def _build_price_trend_context(user_region: str) -> str:
-    """Формирует блок с текущими ценами + трендом за 7 и 30 дней."""
-    now_df = get_latest_prices_frame()
-    hist7_df = get_price_history_frame(days=7)
-    hist30_df = get_price_history_frame(days=30)
+    for culture_name in sorted(AGRO_HANDBOOK.keys(), key=len, reverse=True):
+        if culture_name.lower() in searchable_text:
+            return culture_name
 
-    if now_df.empty:
-        return "<PRICES>НЕТ ДАННЫХ</PRICES>"
-
-    local_mask = now_df["region"].fillna("").apply(
-        lambda v: _region_match(v, user_region)
-    )
-    local_df = now_df[local_mask]
-    national_df = now_df
-
-    def _median(df: pd.DataFrame, crop: str) -> float | None:
-        sub = df[df["crop_name"] == crop]["wholesale_price"]
-        return float(sub.median()) if not sub.empty else None
-
-    lines = ["<PRICES>"]
-    for scope_label, df in [
-        (f"Локальные ({user_region or 'Москва'})", local_df),
-        ("По РФ", national_df),
-    ]:
-        if df.empty:
-            lines.append(f"  [{scope_label}]: нет данных")
-            continue
-        agg = (
-            df.groupby("crop_name")["wholesale_price"]
-            .agg(median="median", count="count")
-            .sort_values("median", ascending=False)
-        )
-        lines.append(f"  [{scope_label}]:")
-        for crop, row in agg.iterrows():
-            m7 = _median(hist7_df, crop)
-            m30 = _median(hist30_df, crop)
-
-            if m7 and row["median"] and m7 > 0:
-                delta7 = ((row["median"] - m7) / m7) * 100
-                trend7 = f"{delta7:+.0f}% за 7 дн"
-            else:
-                trend7 = "нет истории"
-
-            if m30 and row["median"] and m30 > 0:
-                delta30 = ((row["median"] - m30) / m30) * 100
-                trend30 = f"{delta30:+.0f}% за 30 дн"
-            else:
-                trend30 = "нет истории"
-
-            lines.append(
-                f"    - {crop}: {row['median']:.0f} руб/кг "
-                f"({trend7}, {trend30}), лотов: {int(row['count'])}"
-            )
-    lines.append("</PRICES>")
-    return "\n".join(lines)
+    return ""
 
 
 def _build_demand_context(user_region: str) -> str:
@@ -461,9 +416,11 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str, farm_
     region = (user_region or "").strip() or "Москва"
     farm_area = float((farm_profile or {}).get("total_area_sqm", 0.0) or 0.0)
     energy_price = float((farm_profile or {}).get("energy_price_kwh", 0.0) or 0.0)
+    requested_culture = _detect_requested_culture(user_message, history)
+    retriever = DataRetriever()
+    market_summary = retriever.get_aggregated_context(requested_culture, region)
 
     weather = _get_weather_forecast(region)
-    prices_block = _build_price_trend_context(region)
     demand_block = _build_demand_context(region)
     news_block = _build_news_context()
     handbook_block = _build_handbook_context(now)
@@ -473,7 +430,8 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str, farm_
         f"  energy_price_kwh: {energy_price}\n"
         "</FARM_STATE>"
     )
-    system_prompt = f"{SYSTEM_PROMPT}\n\n{farm_state_block}"
+    prices_block = f"<PRICES>{market_summary}</PRICES>"
+    system_prompt = f"{SYSTEM_PROMPT}\n\n{farm_state_block}\n\n{prices_block}"
 
     # Пользовательский промпт — структурированный контекст + вопрос
     user_prompt = (
@@ -483,7 +441,6 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str, farm_
         f"<WEATHER>{weather}</WEATHER>\n\n"
         f"{farm_state_block}\n\n"
         f"{handbook_block}\n\n"
-        f"{prices_block}\n\n"
         f"{demand_block}\n\n"
         f"{news_block}\n"
         f"</CONTEXT>\n\n"
