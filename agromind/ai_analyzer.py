@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 import requests
 
+from agromind.calculator import EconomicsCalculator
 from agromind.rag_retriever import DataRetriever
 from agromind.services import (
     get_latest_demand_signals_frame,
@@ -307,6 +309,17 @@ def _detect_requested_culture(user_message: str, history: list[dict]) -> str:
     return ""
 
 
+def _extract_average_price(market_summary: str) -> float | None:
+    match = re.search(r"Средняя цена:\s*([\d.]+)", market_summary)
+    if not match:
+        return None
+
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
 def _build_demand_context(user_region: str) -> str:
     df = get_latest_demand_signals_frame()
     if df.empty:
@@ -380,14 +393,15 @@ SYSTEM_PROMPT = """/no_think
 Твоя задача — давать КОНКРЕТНЫЕ, ПРОВЕРЯЕМЫЕ инструкции на основе ТОЛЬКО переданных данных.
 
 ЖЁСТКИЕ ПРАВИЛА:
-1. Используй ТОЛЬКО данные из блоков <AGRO_HANDBOOK>, <PRICES>, <TENDERS>, <NEWS>, <WEATHER>.
+1. Используй ТОЛЬКО данные из блоков <AGRO_HANDBOOK>, <PRICES>, <TENDERS>, <NEWS>, <WEATHER>, <FARM_STATE>, <CALCULATED_ECONOMICS>.
 2. Если данных нет — пиши «данных нет», НЕ придумывай цифры.
 3. Никаких эмодзи, никаких общих фраз («важно следить», «рекомендуется»).
 4. Отвечай конкретными числами: pH 5.8, EC 1.4, t 22°C — не диапазонами, если не нужно.
 5. При рекомендации культуры ВСЕГДА указывай: дату сбора, текущую цену, тренд, наличие тендера.
 6. Если пользователь спрашивает про ежедневный уход — давай пошаговый чек-лист с конкретными действиями.
 7. Никогда не повторяй вопрос пользователя.
-8. Ты работаешь в двух режимах.
+8. Для финансовых ответов ЗАПРЕЩЕНО считать выручку, расходы и прибыль самостоятельно. Используй только готовые цифры из блока <CALCULATED_ECONOMICS>.
+9. Ты работаешь в двух режимах.
 РЕЖИМ КАЛЬКУЛЯТОРА: Если пользователь говорит 'У меня есть X площади', рассчитай потенциальную выручку, вычти операционные расходы (OPEX = свет + семена + питание из AGRO_HANDBOOK) и назови чистую прибыль. Учитывай стоимость кВт/ч из FARM_STATE.
 РЕЖИМ СОВЕТНИКА: Если пользователь говорит 'Хочу заработать Y рублей', иди от обратного. Вычисли маржинальность 1 кв.м для самых выгодных культур по текущим рыночным ценам. Раздели желаемую прибыль на маржу с 1 кв.м, чтобы сказать пользователю, СКОЛЬКО квадратных метров ему нужно засеять для достижения цели. Если это больше его текущей площади из FARM_STATE, предложи разбить цель на несколько циклов.
 
@@ -419,6 +433,7 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str, farm_
     requested_culture = _detect_requested_culture(user_message, history)
     retriever = DataRetriever()
     market_summary = retriever.get_aggregated_context(requested_culture, region)
+    market_price_per_kg = _extract_average_price(market_summary)
 
     weather = _get_weather_forecast(region)
     demand_block = _build_demand_context(region)
@@ -431,7 +446,33 @@ def chat_with_ai(user_message: str, history: list[dict], user_region: str, farm_
         "</FARM_STATE>"
     )
     prices_block = f"<PRICES>{market_summary}</PRICES>"
-    system_prompt = f"{SYSTEM_PROMPT}\n\n{farm_state_block}\n\n{prices_block}"
+
+    if requested_culture and requested_culture in AGRO_HANDBOOK and market_price_per_kg is not None:
+        economics = EconomicsCalculator.calculate_cycle_economics(
+            area_sqm=farm_area,
+            energy_price_kwh=energy_price,
+            market_price_per_kg=market_price_per_kg,
+            culture_data=AGRO_HANDBOOK[requested_culture],
+        )
+        economics_block = (
+            "<CALCULATED_ECONOMICS>\n"
+            f"Культура: {requested_culture}\n"
+            f"Расходы на свет: {economics['energy_cost']:.2f} руб\n"
+            f"Семена/удобрения: {economics['materials_cost']:.2f} руб\n"
+            f"Общие расходы: {economics['total_expenses']:.2f} руб\n"
+            f"Ожидаемый урожай: {economics['expected_yield_kg']:.2f} кг\n"
+            f"Выручка: {economics['expected_revenue']:.2f} руб\n"
+            f"Чистая прибыль за цикл: {economics['net_profit']:.2f} руб\n"
+            "</CALCULATED_ECONOMICS>"
+        )
+    else:
+        economics_block = (
+            "<CALCULATED_ECONOMICS>"
+            "Недостаточно данных для расчета экономики по циклу."
+            "</CALCULATED_ECONOMICS>"
+        )
+
+    system_prompt = f"{SYSTEM_PROMPT}\n\n{farm_state_block}\n\n{prices_block}\n\n{economics_block}"
 
     # Пользовательский промпт — структурированный контекст + вопрос
     user_prompt = (
