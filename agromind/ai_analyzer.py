@@ -11,6 +11,8 @@ import requests
 from agromind.calculator import EconomicsCalculator
 from agromind.database import get_active_plant
 from agromind.influx_client import get_aggregated_prices
+from agromind.rag_retriever import format_rag_context, needs_rag_search, search_knowledge_base
+from agromind.services import DialogueManager
 
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -236,6 +238,11 @@ SYSTEM_PROMPT = """
 4. Один уточняющий вопрос только если в контексте не хватает данных для точного финансового ответа.
 """.strip()
 
+SYSTEM_PROMPT = SYSTEM_PROMPT + """
+
+7. Если в контексте есть блок <KNOWLEDGE_BASE>, используй его для диагностики и рекомендаций по уходу. Ссылайся на источник. Финансовые цифры бери только из <CALCULATED_ECONOMICS>.
+"""
+
 SYSTEM_PROMPT = """
 Ты — агроном-консультант для сити-фермы. Твоя задача — спокойно, понятно и доброжелательно объяснить только те факты, которые уже переданы в блоке <CALCULATED_ECONOMICS>.
 Правила:
@@ -252,6 +259,13 @@ SYSTEM_PROMPT = """
 3. Ровно одна рекомендация по уходу на основе <WEATHER>.
 4. Один уточняющий вопрос только если в контексте не хватает данных для точного финансового ответа.
 """.strip()
+
+
+SYSTEM_PROMPT = SYSTEM_PROMPT + """
+
+8. Ты — профессиональный ассистент для INDOOR vertical farm. Если ферма indoor, погода на улице не имеет значения; никогда не связывай уличную погоду с климатом внутри фермы.
+9. Если пользователь пишет «да», «ок» или «продолжай», считай, что он продолжает последнюю обсуждавшуюся тему.
+"""
 
 
 def _normalize_text(value: str) -> str:
@@ -685,6 +699,167 @@ def chat_with_ai(
     farm_profile: dict[str, Any],
 ) -> str:
     region = _normalize_region(user_region)
+
+    dialogue_manager = DialogueManager()
+    user_state = dialogue_manager.load_state()
+
+    semantic_resolution = dialogue_manager.handle_short_answers(user_message, user_state)
+    effective_message = (
+        semantic_resolution["resolved_message"]
+        if semantic_resolution is not None
+        else user_message
+    )
+
+    intent = extract_user_intent(effective_message)
+    active_plant = get_active_plant()
+    if active_plant is not None and intent["culture"] is None:
+        intent["culture"] = active_plant["culture_name"]
+
+    normalized_message = _normalize_text(effective_message)
+    use_rag = needs_rag_search(effective_message)
+
+    economics_keywords = (
+        "прибыл",
+        "выручк",
+        "экономик",
+        "бизнес",
+        "окуп",
+        "маржин",
+        "доход",
+        "заработ",
+        "рентабель",
+        "цена",
+        "бюджет",
+        "тариф",
+        "бизнес-план",
+    )
+    requires_economics = bool(
+        intent.get("area_sqm")
+        or intent.get("target_budget")
+        or any(keyword in normalized_message for keyword in economics_keywords)
+    )
+
+    context_filter = dialogue_manager.get_context_filter(farm_profile)
+    farm_type = context_filter.get("farm_type")
+
+    economics_block = (
+        "<CALCULATED_ECONOMICS>Финансовый контекст в этом запросе не запрашивался.</CALCULATED_ECONOMICS>"
+    )
+    if requires_economics:
+        energy_price_kwh = _extract_energy_price(effective_message, farm_profile)
+        economics_block = build_economics_context(intent, region, energy_price_kwh)
+
+    rag_block = ""
+    if use_rag:
+        rag_query = effective_message
+        if intent.get("culture"):
+            rag_query = f"{intent['culture']}: {effective_message}"
+        elif active_plant:
+            rag_query = f"{active_plant['culture_name']}: {effective_message}"
+        rag_chunks = search_knowledge_base(rag_query, top_k=3)
+        rag_block = format_rag_context(rag_chunks)
+
+    weather_block = ""
+    if context_filter.get("include_weather", True):
+        weather_block = get_weather_context(region) or WEATHER_ERROR_TEXT
+
+    farm_state_block = ""
+    if active_plant:
+        farm_state_block = (
+            "<FARM_STATE>\n"
+            f"В данный момент у пользователя растет: {active_plant['culture_name']}. "
+            f"Идет {active_plant['days_active']}-й день цикла.\n"
+            "</FARM_STATE>"
+        )
+
+    context_parts = [
+        "<CONTEXT>",
+        f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Регион: {region}",
+    ]
+    if weather_block:
+        context_parts.append(f"<WEATHER>{weather_block}</WEATHER>")
+    if farm_state_block:
+        context_parts.append(farm_state_block)
+    if rag_block:
+        context_parts.append(rag_block)
+    context_parts.append(economics_block)
+    context_parts.append("</CONTEXT>")
+    user_prompt = "\n".join(context_parts) + f"\n\n<QUESTION>{effective_message}</QUESTION>"
+
+    current_topic = "general"
+    if semantic_resolution and semantic_resolution.get("resolved_topic"):
+        current_topic = str(semantic_resolution["resolved_topic"])
+    elif use_rag:
+        current_topic = "rag_care"
+    elif requires_economics:
+        current_topic = "economics"
+    elif active_plant and any(
+        keyword in normalized_message for keyword in ("урожай", "собрать", "срез", "уборка")
+    ):
+        current_topic = "harvest"
+    elif active_plant or intent.get("culture"):
+        current_topic = "cultivation"
+
+    awaiting_confirmation = "clarification_required: yes" in economics_block
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for item in history[-4:]:
+        role = str(item.get("role", "")).strip()
+        content = str(item.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_prompt})
+
+    try:
+        response = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": messages,
+                "stream": False,
+                "keep_alive": "1h",
+                "options": {
+                    "temperature": 0.2,
+                    "top_p": 0.85,
+                    "repeat_penalty": 1.1,
+                    "num_ctx": 4096,
+                    "num_gpu": 99,
+                    "num_predict": 2048,
+                },
+                "stop": ["<|im_end|>", "<|im_start|>", "<|endoftext|>", "</s>"],
+            },
+            timeout=None,
+        )
+        response.raise_for_status()
+        content = response.json().get("message", {}).get("content") or ""
+
+        print(f"RAW OLLAMA RESPONSE: {content}")
+
+        if "<think>" in content:
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+        dialogue_manager.save_state(
+            last_topic=current_topic,
+            awaiting_confirmation=awaiting_confirmation,
+            farm_type=farm_type,
+        )
+        return content or "Модель не вернула ответ."
+    except requests.exceptions.RequestException as exc:
+        dialogue_manager.save_state(
+            last_topic=current_topic,
+            awaiting_confirmation=awaiting_confirmation,
+            farm_type=farm_type,
+        )
+        return f"Ошибка соединения с Ollama: {exc}"
+    except ValueError as exc:
+        dialogue_manager.save_state(
+            last_topic=current_topic,
+            awaiting_confirmation=awaiting_confirmation,
+            farm_type=farm_type,
+        )
+        return f"Ошибка разбора ответа Ollama: {exc}"
+
+    region = _normalize_region(user_region)
     intent = extract_user_intent(user_message)
     active_plant = get_active_plant()
     if active_plant is not None and intent["culture"] is None:
@@ -702,11 +877,22 @@ def chat_with_ai(
             "</FARM_STATE>\n"
         )
 
+    rag_block = ""
+    if needs_rag_search(user_message):
+        rag_query = user_message
+        if intent.get("culture"):
+            rag_query = f"{intent['culture']}: {user_message}"
+        elif active_plant:
+            rag_query = f"{active_plant['culture_name']}: {user_message}"
+        rag_chunks = search_knowledge_base(rag_query, top_k=3)
+        rag_block = format_rag_context(rag_chunks)
+
     user_prompt = (
         f"<CONTEXT>\n"
         f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Регион: {region}\n"
         f"<WEATHER>{weather_block}</WEATHER>\n"
         f"{farm_state_block}"
+        f"{rag_block}\n"
         f"{economics_block}\n"
         f"</CONTEXT>\n\n"
         f"<QUESTION>{user_message}</QUESTION>"

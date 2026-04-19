@@ -9,3 +9,6 @@ pandas
 sqlalchemy
 apscheduler
 influxdb-client
+chromadb
+pdfminer.six
+sentence-transformers

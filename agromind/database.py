@@ -59,6 +59,19 @@ def init_db() -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS dialogue_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    last_topic TEXT,
+                    awaiting_confirmation BOOLEAN DEFAULT 0,
+                    farm_type TEXT,
+                    updated_at DATETIME
+                )
+                """
+            )
+        )
 
 
 @contextmanager

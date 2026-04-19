@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
 from sqlalchemy import Select, and_, desc, func, select
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from agromind.database import init_db, session_scope
@@ -16,6 +18,102 @@ from agromind.parsers.prices import fetch_all_prices
 
 
 logger = logging.getLogger(__name__)
+
+
+class DialogueManager:
+    SHORT_CONFIRMATIONS = {"да", "ок", "окей", "продолжай", "yes", "continue"}
+
+    def __init__(self) -> None:
+        init_db()
+
+    def load_state(self) -> dict[str, Any]:
+        with session_scope() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT last_topic, awaiting_confirmation, farm_type
+                    FROM dialogue_state
+                    WHERE id = 1
+                    """
+                )
+            ).mappings().first()
+
+        if row is None:
+            return {
+                "last_topic": None,
+                "awaiting_confirmation": False,
+                "farm_type": None,
+            }
+
+        return {
+            "last_topic": row["last_topic"],
+            "awaiting_confirmation": bool(row["awaiting_confirmation"]),
+            "farm_type": row["farm_type"],
+        }
+
+    def save_state(
+        self,
+        *,
+        last_topic: str | None,
+        awaiting_confirmation: bool,
+        farm_type: str | None,
+    ) -> None:
+        with session_scope() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO dialogue_state (id, last_topic, awaiting_confirmation, farm_type, updated_at)
+                    VALUES (1, :last_topic, :awaiting_confirmation, :farm_type, :updated_at)
+                    ON CONFLICT(id) DO UPDATE SET
+                        last_topic = excluded.last_topic,
+                        awaiting_confirmation = excluded.awaiting_confirmation,
+                        farm_type = excluded.farm_type,
+                        updated_at = excluded.updated_at
+                    """
+                ),
+                {
+                    "last_topic": last_topic,
+                    "awaiting_confirmation": int(awaiting_confirmation),
+                    "farm_type": farm_type,
+                    "updated_at": datetime.utcnow(),
+                },
+            )
+
+    def get_context_filter(self, farm_profile: dict[str, Any] | None) -> dict[str, Any]:
+        state = self.load_state()
+        farm_type = str((farm_profile or {}).get("type") or state.get("farm_type") or "").strip().lower()
+        return {
+            "farm_type": farm_type or None,
+            "include_weather": farm_type != "indoor",
+        }
+
+    def handle_short_answers(
+        self,
+        user_message: str,
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        normalized = re.sub(r"\s+", " ", str(user_message or "").strip().lower())
+        if normalized not in self.SHORT_CONFIRMATIONS:
+            return None
+
+        last_topic = str(state.get("last_topic") or "").strip()
+        if not last_topic:
+            return None
+
+        semantic_map = {
+            "economics": "Продолжи финансовый разбор и точный бизнес-план по текущей культуре.",
+            "rag_care": "Продолжи диагностику проблемы растения и рекомендации по уходу для текущей культуры.",
+            "cultivation": "Продолжи рекомендации по выращиванию текущей культуры и следующему шагу по циклу.",
+            "harvest": "Продолжи рекомендации по сбору урожая и завершению текущего цикла.",
+        }
+        resolved_message = semantic_map.get(
+            last_topic,
+            f"Продолжи последнюю тему разговора: {last_topic}.",
+        )
+        return {
+            "resolved_message": resolved_message,
+            "resolved_topic": last_topic,
+        }
 
 # ---------------------------------------------------------------------------
 # Рабочие RSS-ленты новостей (проверены на 2026-04)
