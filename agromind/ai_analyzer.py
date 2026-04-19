@@ -14,7 +14,7 @@ from agromind.services import (
 
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "qwen3.5:9b"
+OLLAMA_MODEL = "qwen2.5:3b"
 WEATHER_ERROR_TEXT = "Данные о погоде недоступны"
 
 AGRO_HANDBOOK: dict[str, dict] = {
@@ -351,8 +351,7 @@ def _build_news_context() -> str:
 # Системный промпт
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """/no_think
-Ты — агроном-технолог сити-фермы (гидропоника, аэропоника). Даёшь КОНКРЕТНЫЕ инструкции только на основе переданных данных.
+SYSTEM_PROMPT = """Ты — агроном-технолог сити-фермы (гидропоника, аэропоника). Даёшь КОНКРЕТНЫЕ инструкции только на основе переданных данных.
 
 ПРАВИЛА:
 1. Только данные из <AGRO_HANDBOOK>, <PRICES>, <TENDERS>, <NEWS>, <WEATHER>, <FARM_STATE>, <CALCULATED_ECONOMICS>.
