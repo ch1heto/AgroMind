@@ -486,7 +486,7 @@ def chat_with_ai(
                     "repeat_penalty": 1.15,
                     "num_ctx": 4096,    # Было 8192 — вдвое меньше VRAM под KV-cache
                     "num_gpu": 99,       # Все слои на GPU принудительно
-                    "num_predict": 512,  # Ограничение длины ответа
+                    "num_predict": 2048,  # Ограничение длины ответа
                 },
                 "stop": ["<|im_end|>", "<|im_start|>", "<|endoftext|>", "</s>"],
             },
@@ -494,6 +494,8 @@ def chat_with_ai(
         )
         response.raise_for_status()
         content = response.json().get("message", {}).get("content") or ""
+
+        print(f"RAW OLLAMA RESPONSE: {content}")
 
         if "<think>" in content:
             content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()

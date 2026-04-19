@@ -162,7 +162,7 @@ def render_price_charts_tab() -> None:
         height=420,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Сводная таблица по последней цене
     st.markdown("**Последние зафиксированные цены**")
@@ -183,7 +183,7 @@ def render_price_charts_tab() -> None:
             })
             .sort_values("Медиана руб/кг", ascending=False)
         )
-        st.dataframe(summary, use_container_width=True, hide_index=True)
+        st.dataframe(summary, width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ def render_dashboard_tabs(farm_profile: dict[str, float]) -> None:
                     "published_at": "Дата",
                     "wholesale_price": "Цена, руб/кг",
                 }),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -336,7 +336,7 @@ def render_dashboard_tabs(farm_profile: dict[str, float]) -> None:
                     "published_at": "Дата",
                     "url": "Ссылка",
                 }),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -373,12 +373,12 @@ def main() -> None:
                 step=0.1,
                 key="farm_energy_input",
             )
-            if st.button("Сохранить профиль", use_container_width=True):
+            if st.button("Сохранить профиль", width="stretch"):
                 save_farm_profile(area=farm_area, energy_price=energy_price)
                 farm_profile = get_farm_profile()
                 st.success("Сохранено.")
 
-        if st.button("Обновить данные сейчас", use_container_width=True, type="primary"):
+        if st.button("Обновить данные сейчас", width="stretch", type="primary"):
             with st.spinner("Парсинг..."):
                 result = refresh_data()
             if result["news_added"] or result["prices_added"] or result["demand_added"]:
