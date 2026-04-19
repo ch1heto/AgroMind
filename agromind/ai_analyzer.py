@@ -711,6 +711,22 @@ def chat_with_ai(
     )
 
     intent = extract_user_intent(effective_message)
+    intent.setdefault("area", intent.get("area_sqm"))
+    intent.setdefault("budget", intent.get("target_budget"))
+
+    if intent["area"] is None:
+        intent["area"] = farm_profile.get("area_sqm")
+    if intent["area"] is None:
+        intent["area"] = farm_profile.get("total_area_sqm")
+
+    if intent["budget"] is None:
+        intent["budget"] = farm_profile.get("budget")
+
+    if intent.get("area_sqm") is None:
+        intent["area_sqm"] = intent["area"]
+    if intent.get("target_budget") is None:
+        intent["target_budget"] = intent["budget"]
+
     active_plant = get_active_plant()
     if active_plant is not None and intent["culture"] is None:
         intent["culture"] = active_plant["culture_name"]
@@ -760,7 +776,10 @@ def chat_with_ai(
         rag_block = format_rag_context(rag_chunks)
 
     weather_block = ""
-    if context_filter.get("include_weather", True):
+    if (
+        farm_profile.get("farm_type") != "Сити-ферма (закрытое помещение)"
+        and context_filter.get("include_weather", True)
+    ):
         weather_block = get_weather_context(region) or WEATHER_ERROR_TEXT
 
     farm_state_block = ""

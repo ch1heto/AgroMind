@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
+from datetime import datetime
 
 import plotly.graph_objects as go
 import streamlit as st
@@ -9,7 +8,6 @@ from streamlit_autorefresh import st_autorefresh
 
 import agromind.calculator as calculator_module
 from agromind.ai_analyzer import AGRO_HANDBOOK, chat_with_ai
-from agromind.config import DATA_DIR, WORKER_INTERVAL_MINUTES
 from agromind.database import (
     add_active_plant,
     get_active_plant,
@@ -23,7 +21,6 @@ from agromind.services import (
     get_latest_prices_frame,
     get_price_history_frame,
     get_recent_news,
-    refresh_data,
     save_farm_profile,
 )
 
@@ -102,10 +99,7 @@ def render_price_charts_tab() -> None:
     df = get_price_history_frame(days=days, crop_names=selected_crops)
 
     if df.empty:
-        st.info(
-            "Данных за выбранный период нет. "
-            "Нажмите «Обновить данные сейчас» в сайдбаре чтобы собрать цены."
-        )
+        st.info("Данных за выбранный период пока нет.")
         return
 
     # График медианной цены по дням
@@ -247,48 +241,6 @@ def render_chat_tab(farm_profile: dict[str, float]) -> None:
     st.session_state.chat_messages.append({"role": "assistant", "content": answer})
 
 
-def _render_worker_health() -> None:
-    health_file = DATA_DIR / "worker_health.json"
-    if not health_file.exists():
-        st.sidebar.warning("Воркер не запущен.")
-        return
-    try:
-        payload = json.loads(health_file.read_text())
-    except Exception:
-        st.sidebar.error("Не удалось прочитать статус воркера.")
-        return
-
-    status = payload.get("status", "unknown")
-    last_update_raw = payload.get("last_update", "")
-    error = payload.get("error")
-
-    try:
-        last_update = datetime.fromisoformat(last_update_raw)
-        if last_update.tzinfo is None:
-            last_update = last_update.replace(tzinfo=timezone.utc)
-        age_minutes = int((datetime.now(timezone.utc) - last_update).total_seconds() / 60)
-        age_str = f"{age_minutes} мин назад"
-    except Exception:
-        age_minutes = None
-        age_str = last_update_raw
-
-    if status == "ok":
-        st.sidebar.success(f"Воркер: активен ({age_str})")
-    elif status == "running":
-        st.sidebar.info(f"Воркер: собирает данные...")
-    elif status in ("error", "crash"):
-        st.sidebar.error(f"Воркер: ошибка ({age_str})")
-        if error:
-            with st.sidebar.expander("Детали"):
-                st.code(error)
-    elif status == "stopped":
-        st.sidebar.warning("Воркер остановлен.")
-    else:
-        st.sidebar.warning(f"Статус: {status}")
-
-    if age_minutes is not None and age_minutes > WORKER_INTERVAL_MINUTES * 3:
-        st.sidebar.warning(f"Нет обновлений {age_minutes} мин — возможно, воркер завис.")
-
 
 # ---------------------------------------------------------------------------
 # Основной дашборд
@@ -313,7 +265,7 @@ def render_dashboard_tabs(farm_profile: dict[str, float]) -> None:
     with tab1:
         st.subheader("Актуальный ценовой срез")
         if latest_prices.empty:
-            st.info("Цен пока нет. Нажмите «Обновить данные сейчас».")
+            st.info("Цен пока нет.")
         else:
             st.dataframe(
                 latest_prices.rename(columns={
@@ -388,18 +340,6 @@ def main() -> None:
                 farm_profile = get_farm_profile()
                 st.success("Сохранено.")
 
-        if st.button("Обновить данные сейчас", width="stretch", type="primary"):
-            with st.spinner("Парсинг..."):
-                result = refresh_data()
-            if result["news_added"] or result["prices_added"] or result["demand_added"]:
-                st.success(
-                    f"Готово: новости +{result['news_added']}, "
-                    f"цены +{result['prices_added']}, "
-                    f"тендеры +{result['demand_added']}"
-                )
-            if result["errors"]:
-                for error in result["errors"]:
-                    st.error(error)
 
         st.header("🌱 Моя ферма")
         if active_plant is None:
@@ -418,8 +358,6 @@ def main() -> None:
             if st.button("Собрать урожай", width="stretch"):
                 harvest_active_plant()
                 st.rerun()
-
-        _render_worker_health()
 
     render_dashboard_tabs(farm_profile)
 
