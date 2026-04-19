@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from difflib import get_close_matches
 from datetime import datetime, timedelta
+import math
 import re
 from typing import Any
 
@@ -237,6 +238,17 @@ Structure the answer like this:
 
 def _normalize_text(value: str) -> str:
     cleaned = str(value or "").strip().lower().replace("ё", "е")
+    number_word_replacements = {
+        "один": "1",
+        "два": "2",
+        "три": "3",
+        "пять": "5",
+        "десять": "10",
+        "пятьдесят": "50",
+        "сто": "100",
+    }
+    for word, number in number_word_replacements.items():
+        cleaned = cleaned.replace(word, number)
     cleaned = re.sub(r"[^\w\s.%/+:-]", " ", cleaned)
     return " ".join(cleaned.split())
 
@@ -441,6 +453,18 @@ def _build_exact_match_context(
             f"Ожидаемая чистая прибыль: {_format_currency(economics['net_profit'])} руб.",
         ]
     )
+
+    if target_budget and 0 < economics["net_profit"] < target_budget:
+        cycles_needed = math.ceil(target_budget / economics["net_profit"])
+        area_needed = (target_budget / economics["net_profit"]) * area_sqm
+        lines.extend(
+            [
+                "Альтернативный путь до целевой суммы:",
+                f"Путь 1 — циклы: чтобы выйти на {_format_currency(target_budget)} руб., нужно примерно {cycles_needed} циклов при той же площади.",
+                f"Путь 2 — площадь: чтобы выйти на {_format_currency(target_budget)} руб. за один цикл, нужна площадь около {area_needed:.1f} м².",
+            ]
+        )
+
     lines.append("</CALCULATED_ECONOMICS>")
     return "\n".join(lines)
 
@@ -539,6 +563,43 @@ def _build_beginner_context(
     return "\n".join(lines)
 
 
+def _build_missing_tariff_context(
+    intent: dict[str, str | float | None],
+    target_budget: float | None,
+    today: datetime,
+) -> str:
+    culture = intent["culture"]
+    area_sqm = intent["area_sqm"]
+    lines = [
+        "<CALCULATED_ECONOMICS>",
+        "scenario: missing_tariff",
+        "clarification_required: yes",
+    ]
+
+    if culture:
+        lines.append(f"Культура: {culture}")
+        lines.append(_format_crop_conditions(culture, today))
+    else:
+        lines.append("Культура не определена явно.")
+        lines.append(f"Лёгкая культура для старта: {_format_crop_conditions(EASIEST_CULTURE, today)}")
+        lines.append(f"Высокомаржинальная культура: {_format_crop_conditions(HIGH_MARGIN_CULTURE, today)}")
+
+    if area_sqm:
+        lines.append(f"Площадь: {float(area_sqm):.1f} м²")
+
+    if target_budget:
+        lines.append(f"Целевая сумма пользователя: {_format_currency(target_budget)} руб.")
+
+    lines.append(
+        "Внимание: Тариф на электроэнергию неизвестен (равен 0). Финансовый расчет невозможен. "
+        "Объясни пользователю базовые характеристики культуры (цикл, климат) и ОБЯЗАТЕЛЬНО попроси его "
+        "ввести свой тариф в панели настроек дашборда ('Тариф электроэнергии') и сохранить профиль для "
+        "получения точного бизнес-плана."
+    )
+    lines.append("</CALCULATED_ECONOMICS>")
+    return "\n".join(lines)
+
+
 def build_economics_context(
     intent: dict[str, str | float | None],
     region: str,
@@ -548,6 +609,14 @@ def build_economics_context(
     culture = intent["culture"]
     area_sqm = intent["area_sqm"]
     target_budget = intent["target_budget"]
+    normalized_target_budget = float(target_budget) if target_budget else None
+
+    if area_sqm and (energy_price_kwh is None or energy_price_kwh <= 0):
+        return _build_missing_tariff_context(
+            intent=intent,
+            target_budget=normalized_target_budget,
+            today=today,
+        )
 
     if culture and area_sqm:
         return _build_exact_match_context(
@@ -555,7 +624,7 @@ def build_economics_context(
             area_sqm=float(area_sqm),
             region=region,
             energy_price_kwh=energy_price_kwh,
-            target_budget=float(target_budget) if target_budget else None,
+            target_budget=normalized_target_budget,
             today=today,
         )
 
@@ -564,13 +633,13 @@ def build_economics_context(
             area_sqm=float(area_sqm),
             region=region,
             energy_price_kwh=energy_price_kwh,
-            target_budget=float(target_budget) if target_budget else None,
+            target_budget=normalized_target_budget,
             today=today,
         )
 
     return _build_beginner_context(
         intent=intent,
-        target_budget=float(target_budget) if target_budget else None,
+        target_budget=normalized_target_budget,
         today=today,
     )
 
