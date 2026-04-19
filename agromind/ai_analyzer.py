@@ -686,10 +686,13 @@ def chat_with_ai(
 ) -> str:
     region = _normalize_region(user_region)
     intent = extract_user_intent(user_message)
+    active_plant = get_active_plant()
+    if active_plant is not None and intent["culture"] is None:
+        intent["culture"] = active_plant["culture_name"]
+
     energy_price_kwh = _extract_energy_price(user_message, farm_profile)
     economics_block = build_economics_context(intent, region, energy_price_kwh)
     weather_block = get_weather_context(region) or WEATHER_ERROR_TEXT
-    active_plant = get_active_plant()
     farm_state_block = ""
     if active_plant:
         farm_state_block = (
