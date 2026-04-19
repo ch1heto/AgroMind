@@ -7,9 +7,15 @@ import plotly.graph_objects as go
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
+import agromind.calculator as calculator_module
 from agromind.ai_analyzer import AGRO_HANDBOOK, chat_with_ai
 from agromind.config import DATA_DIR, WORKER_INTERVAL_MINUTES
-from agromind.database import init_db
+from agromind.database import (
+    add_active_plant,
+    get_active_plant,
+    harvest_active_plant,
+    init_db,
+)
 from agromind.services import (
     get_crop_filters,
     get_farm_profile,
@@ -351,6 +357,10 @@ def render_dashboard_tabs(farm_profile: dict[str, float]) -> None:
 def main() -> None:
     init_db()
     farm_profile = get_farm_profile()
+    active_plant = get_active_plant()
+    available_cultures = sorted(
+        getattr(calculator_module, "AGRO_HANDBOOK", AGRO_HANDBOOK).keys()
+    )
 
     st.title("AgroMind")
     st.caption("Цены · Тендеры · Новости · AI-агроном")
@@ -390,6 +400,24 @@ def main() -> None:
             if result["errors"]:
                 for error in result["errors"]:
                     st.error(error)
+
+        st.header("🌱 Моя ферма")
+        if active_plant is None:
+            selected_culture = st.selectbox(
+                "Культура для новой посадки",
+                options=available_cultures,
+                key="active_plant_culture",
+            )
+            if st.button("Посадить сегодня", width="stretch"):
+                add_active_plant(selected_culture)
+                st.rerun()
+        else:
+            st.success(
+                f"Растет: {active_plant['culture_name']} | День: {active_plant['days_active']}"
+            )
+            if st.button("Собрать урожай", width="stretch"):
+                harvest_active_plant()
+                st.rerun()
 
         _render_worker_health()
 

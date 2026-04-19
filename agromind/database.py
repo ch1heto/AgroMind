@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterator
 
 from sqlalchemy import create_engine, event, text
@@ -46,6 +46,19 @@ SessionLocal = sessionmaker(
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS user_plants (
+                    id INTEGER PRIMARY KEY,
+                    culture_name TEXT,
+                    plant_date DATE,
+                    is_active BOOLEAN DEFAULT 1
+                )
+                """
+            )
+        )
 
 
 @contextmanager
@@ -59,6 +72,68 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def add_active_plant(culture_name: str) -> None:
+    init_db()
+    with session_scope() as session:
+        session.execute(
+            text("UPDATE user_plants SET is_active = 0 WHERE is_active = 1")
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO user_plants (culture_name, plant_date, is_active)
+                VALUES (:culture_name, :plant_date, 1)
+                """
+            ),
+            {
+                "culture_name": (culture_name or "").strip(),
+                "plant_date": date.today(),
+            },
+        )
+
+
+def get_active_plant() -> dict | None:
+    init_db()
+    with session_scope() as session:
+        result = session.execute(
+            text(
+                """
+                SELECT culture_name, plant_date
+                FROM user_plants
+                WHERE is_active = 1
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+
+    if result is None:
+        return None
+
+    plant_date_value = result["plant_date"]
+    if isinstance(plant_date_value, str):
+        plant_date_parsed = date.fromisoformat(plant_date_value)
+    elif isinstance(plant_date_value, datetime):
+        plant_date_parsed = plant_date_value.date()
+    else:
+        plant_date_parsed = plant_date_value
+
+    days_active = (date.today() - plant_date_parsed).days
+    return {
+        "culture_name": result["culture_name"],
+        "plant_date": plant_date_parsed,
+        "days_active": days_active,
+    }
+
+
+def harvest_active_plant() -> None:
+    init_db()
+    with session_scope() as session:
+        session.execute(
+            text("UPDATE user_plants SET is_active = 0 WHERE is_active = 1")
+        )
 
 
 # ---------------------------------------------------------------------------
