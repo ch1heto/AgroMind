@@ -1,474 +1,612 @@
 from __future__ import annotations
 
-import re
+from difflib import get_close_matches
 from datetime import datetime, timedelta
+import re
+from typing import Any
 
 import requests
 
 from agromind.calculator import EconomicsCalculator
-from agromind.rag_retriever import DataRetriever
-from agromind.services import (
-    get_latest_demand_signals_frame,
-    get_recent_news,
-)
+from agromind.influx_client import get_aggregated_prices
 
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "qwen2.5:3b"
-WEATHER_ERROR_TEXT = "Данные о погоде недоступны"
+WEATHER_ERROR_TEXT = "Температура +5°C, пасмурно, высокая влажность."
+DEFAULT_REGION = "Москва"
+EASIEST_CULTURE = "Салат"
+HIGH_MARGIN_CULTURE = "Базилик"
 
-AGRO_HANDBOOK: dict[str, dict] = {
+AGRO_HANDBOOK: dict[str, dict[str, Any]] = {
     "Базилик": {
-        "cycle_days": (30, 40), "ph": "5.5–6.5", "ec": "1.0–1.6",
-        "temperature_c": "20–25", "humidity_pct": "40–60", "light_hours": 16,
-        "water_l_per_sqm_day": 2.5, "solution_change_days": 7, "germination_days": (5, 7),
-        "daily_checks": "цвет листьев (пожелтение = дефицит N), запах раствора, pH и EC каждые 2 дня",
+        "cycle_days": (30, 40),
+        "ph": "5.5–6.5",
+        "ec": "1.0–1.6",
+        "temperature_c": "20–25",
+        "humidity_pct": "40–60",
+        "light_hours": 16,
+        "water_l_per_sqm_day": 2.5,
+        "solution_change_days": 7,
+        "germination_days": (5, 7),
+        "daily_checks": "цвет листьев, запах раствора, pH и EC каждые 2 дня",
         "harvest_sign": "высота 15–20 см, до начала цветения",
         "margin_note": "высокомаржинальная, быстрый оборот",
-        "yield_kg_per_sqm": 2.2, "power_kw_per_sqm": 24.0,
-        "seed_cost_per_sqm": 180.0, "nutrition_cost_per_sqm": 95.0,
+        "yield_kg_per_sqm": 2.2,
+        "power_kw_per_sqm": 24.0,
+        "seed_cost_per_sqm": 180.0,
+        "nutrition_cost_per_sqm": 95.0,
     },
     "Кинза": {
-        "cycle_days": (30, 40), "ph": "6.0–6.7", "ec": "1.2–1.8",
-        "temperature_c": "15–20", "humidity_pct": "50–70", "light_hours": 12,
-        "water_l_per_sqm_day": 2.0, "solution_change_days": 7, "germination_days": (7, 10),
+        "cycle_days": (30, 40),
+        "ph": "6.0–6.7",
+        "ec": "1.2–1.8",
+        "temperature_c": "15–20",
+        "humidity_pct": "50–70",
+        "light_hours": 12,
+        "water_l_per_sqm_day": 2.0,
+        "solution_change_days": 7,
+        "germination_days": (7, 10),
         "daily_checks": "влажность субстрата, отсутствие полегания, ровный рост",
         "harvest_sign": "высота 20–25 см, до стрелкования",
         "margin_note": "стабильный спрос, средняя маржа",
-        "yield_kg_per_sqm": 1.8, "power_kw_per_sqm": 18.0,
-        "seed_cost_per_sqm": 120.0, "nutrition_cost_per_sqm": 80.0,
+        "yield_kg_per_sqm": 1.8,
+        "power_kw_per_sqm": 18.0,
+        "seed_cost_per_sqm": 120.0,
+        "nutrition_cost_per_sqm": 80.0,
     },
     "Лук зеленый": {
-        "cycle_days": (20, 30), "ph": "6.0–7.0", "ec": "1.4–1.8",
-        "temperature_c": "18–22", "humidity_pct": "60–70", "light_hours": 14,
-        "water_l_per_sqm_day": 2.0, "solution_change_days": 10, "germination_days": (3, 5),
-        "daily_checks": "пожелтение кончиков (избыток соли), равномерность роста",
+        "cycle_days": (20, 30),
+        "ph": "6.0–7.0",
+        "ec": "1.4–1.8",
+        "temperature_c": "18–22",
+        "humidity_pct": "60–70",
+        "light_hours": 14,
+        "water_l_per_sqm_day": 2.0,
+        "solution_change_days": 10,
+        "germination_days": (3, 5),
+        "daily_checks": "пожелтение кончиков, равномерность роста",
         "harvest_sign": "высота 25–30 см",
         "margin_note": "быстрый цикл, хорошая оборачиваемость",
-        "yield_kg_per_sqm": 3.4, "power_kw_per_sqm": 16.0,
-        "seed_cost_per_sqm": 140.0, "nutrition_cost_per_sqm": 75.0,
+        "yield_kg_per_sqm": 3.4,
+        "power_kw_per_sqm": 16.0,
+        "seed_cost_per_sqm": 140.0,
+        "nutrition_cost_per_sqm": 75.0,
     },
     "Микрозелень": {
-        "cycle_days": (7, 10), "ph": "5.5–6.5", "ec": "0.8–1.2",
-        "temperature_c": "20–24", "humidity_pct": "50–60", "light_hours": 12,
-        "water_l_per_sqm_day": 1.5, "solution_change_days": 0, "germination_days": (2, 3),
+        "cycle_days": (7, 10),
+        "ph": "5.5–6.5",
+        "ec": "0.8–1.2",
+        "temperature_c": "20–24",
+        "humidity_pct": "50–60",
+        "light_hours": 12,
+        "water_l_per_sqm_day": 1.5,
+        "solution_change_days": 0,
+        "germination_days": (2, 3),
         "daily_checks": "влажность мата, отсутствие плесени, равномерность проростков",
-        "harvest_sign": "семядольные листья раскрыты, первая пара настоящих листьев только начинается",
+        "harvest_sign": "семядольные листья раскрыты, первые настоящие листья только появляются",
         "margin_note": "самый короткий цикл, максимальная оборачиваемость",
-        "yield_kg_per_sqm": 1.4, "power_kw_per_sqm": 7.0,
-        "seed_cost_per_sqm": 260.0, "nutrition_cost_per_sqm": 35.0,
+        "yield_kg_per_sqm": 1.4,
+        "power_kw_per_sqm": 7.0,
+        "seed_cost_per_sqm": 260.0,
+        "nutrition_cost_per_sqm": 35.0,
     },
     "Мята": {
-        "cycle_days": (45, 60), "ph": "5.5–6.0", "ec": "1.6–2.0",
-        "temperature_c": "18–22", "humidity_pct": "70–80", "light_hours": 14,
-        "water_l_per_sqm_day": 3.0, "solution_change_days": 7, "germination_days": (10, 14),
-        "daily_checks": "влажность воздуха, состояние корней (гниль при застое), аромат",
+        "cycle_days": (45, 60),
+        "ph": "5.5–6.0",
+        "ec": "1.6–2.0",
+        "temperature_c": "18–22",
+        "humidity_pct": "70–80",
+        "light_hours": 14,
+        "water_l_per_sqm_day": 3.0,
+        "solution_change_days": 7,
+        "germination_days": (10, 14),
+        "daily_checks": "влажность воздуха, состояние корней, аромат",
         "harvest_sign": "побеги 15–20 см, срез над 2-м узлом",
         "margin_note": "длинный цикл, нишевый спрос, высокая цена",
-        "yield_kg_per_sqm": 2.6, "power_kw_per_sqm": 32.0,
-        "seed_cost_per_sqm": 210.0, "nutrition_cost_per_sqm": 120.0,
+        "yield_kg_per_sqm": 2.6,
+        "power_kw_per_sqm": 32.0,
+        "seed_cost_per_sqm": 210.0,
+        "nutrition_cost_per_sqm": 120.0,
     },
     "Петрушка": {
-        "cycle_days": (40, 60), "ph": "5.5–6.0", "ec": "1.2–1.8",
-        "temperature_c": "15–20", "humidity_pct": "50–70", "light_hours": 14,
-        "water_l_per_sqm_day": 2.0, "solution_change_days": 7, "germination_days": (14, 21),
+        "cycle_days": (40, 60),
+        "ph": "5.5–6.0",
+        "ec": "1.2–1.8",
+        "temperature_c": "15–20",
+        "humidity_pct": "50–70",
+        "light_hours": 14,
+        "water_l_per_sqm_day": 2.0,
+        "solution_change_days": 7,
+        "germination_days": (14, 21),
         "daily_checks": "цвет листьев, равномерность роста, EC раствора",
         "harvest_sign": "высота 20–25 см, листья насыщенно-зелёные",
         "margin_note": "долгое прорастание, но стабильный спрос",
-        "yield_kg_per_sqm": 2.0, "power_kw_per_sqm": 26.0,
-        "seed_cost_per_sqm": 130.0, "nutrition_cost_per_sqm": 90.0,
+        "yield_kg_per_sqm": 2.0,
+        "power_kw_per_sqm": 26.0,
+        "seed_cost_per_sqm": 130.0,
+        "nutrition_cost_per_sqm": 90.0,
     },
     "Руккола": {
-        "cycle_days": (25, 35), "ph": "6.0–6.5", "ec": "1.2–1.8",
-        "temperature_c": "15–20", "humidity_pct": "50–70", "light_hours": 14,
-        "water_l_per_sqm_day": 2.0, "solution_change_days": 7, "germination_days": (4, 6),
-        "daily_checks": "горечь листьев нарастает при перегреве — следи за t°, аромат",
+        "cycle_days": (25, 35),
+        "ph": "6.0–6.5",
+        "ec": "1.2–1.8",
+        "temperature_c": "15–20",
+        "humidity_pct": "50–70",
+        "light_hours": 14,
+        "water_l_per_sqm_day": 2.0,
+        "solution_change_days": 7,
+        "germination_days": (4, 6),
+        "daily_checks": "контроль перегрева, горечи и аромата",
         "harvest_sign": "высота 10–15 см, до появления стрелки",
         "margin_note": "ресторанный сегмент, премиальная цена",
-        "yield_kg_per_sqm": 1.7, "power_kw_per_sqm": 18.0,
-        "seed_cost_per_sqm": 150.0, "nutrition_cost_per_sqm": 70.0,
+        "yield_kg_per_sqm": 1.7,
+        "power_kw_per_sqm": 18.0,
+        "seed_cost_per_sqm": 150.0,
+        "nutrition_cost_per_sqm": 70.0,
     },
     "Салат": {
-        "cycle_days": (35, 45), "ph": "5.5–6.0", "ec": "0.8–1.2",
-        "temperature_c": "16–20", "humidity_pct": "60–70", "light_hours": 16,
-        "water_l_per_sqm_day": 2.5, "solution_change_days": 7, "germination_days": (3, 5),
-        "daily_checks": "краевой ожог листьев (недостаток Ca), равномерность розетки",
+        "cycle_days": (35, 45),
+        "ph": "5.5–6.0",
+        "ec": "0.8–1.2",
+        "temperature_c": "16–20",
+        "humidity_pct": "60–70",
+        "light_hours": 16,
+        "water_l_per_sqm_day": 2.5,
+        "solution_change_days": 7,
+        "germination_days": (3, 5),
+        "daily_checks": "краевой ожог листьев, равномерность розетки",
         "harvest_sign": "розетка диаметром 20–25 см",
         "margin_note": "высокий объёмный спрос, госзакупки",
-        "yield_kg_per_sqm": 3.1, "power_kw_per_sqm": 26.0,
-        "seed_cost_per_sqm": 110.0, "nutrition_cost_per_sqm": 85.0,
+        "yield_kg_per_sqm": 3.1,
+        "power_kw_per_sqm": 26.0,
+        "seed_cost_per_sqm": 110.0,
+        "nutrition_cost_per_sqm": 85.0,
     },
     "Салат айсберг": {
-        "cycle_days": (45, 60), "ph": "5.5–6.5", "ec": "1.0–1.5",
-        "temperature_c": "15–18", "humidity_pct": "60–70", "light_hours": 16,
-        "water_l_per_sqm_day": 2.5, "solution_change_days": 7, "germination_days": (3, 5),
+        "cycle_days": (45, 60),
+        "ph": "5.5–6.5",
+        "ec": "1.0–1.5",
+        "temperature_c": "15–18",
+        "humidity_pct": "60–70",
+        "light_hours": 16,
+        "water_l_per_sqm_day": 2.5,
+        "solution_change_days": 7,
+        "germination_days": (3, 5),
         "daily_checks": "формирование кочана, краевой ожог",
         "harvest_sign": "кочан плотный, диаметр 15–20 см",
         "margin_note": "крупные контракты HoReCa и сети",
-        "yield_kg_per_sqm": 4.2, "power_kw_per_sqm": 30.0,
-        "seed_cost_per_sqm": 135.0, "nutrition_cost_per_sqm": 100.0,
+        "yield_kg_per_sqm": 4.2,
+        "power_kw_per_sqm": 30.0,
+        "seed_cost_per_sqm": 135.0,
+        "nutrition_cost_per_sqm": 100.0,
     },
     "Укроп": {
-        "cycle_days": (30, 40), "ph": "5.5–6.5", "ec": "1.0–1.6",
-        "temperature_c": "15–20", "humidity_pct": "50–70", "light_hours": 14,
-        "water_l_per_sqm_day": 2.0, "solution_change_days": 7, "germination_days": (7, 14),
-        "daily_checks": "пожелтение (дефицит Mg), равномерность всходов",
+        "cycle_days": (30, 40),
+        "ph": "5.5–6.5",
+        "ec": "1.0–1.6",
+        "temperature_c": "15–20",
+        "humidity_pct": "50–70",
+        "light_hours": 14,
+        "water_l_per_sqm_day": 2.0,
+        "solution_change_days": 7,
+        "germination_days": (7, 14),
+        "daily_checks": "пожелтение, равномерность всходов",
         "harvest_sign": "высота 25–30 см, до зонтика",
         "margin_note": "массовый спрос, конкурентная цена",
-        "yield_kg_per_sqm": 2.3, "power_kw_per_sqm": 20.0,
-        "seed_cost_per_sqm": 105.0, "nutrition_cost_per_sqm": 72.0,
+        "yield_kg_per_sqm": 2.3,
+        "power_kw_per_sqm": 20.0,
+        "seed_cost_per_sqm": 105.0,
+        "nutrition_cost_per_sqm": 72.0,
     },
     "Шпинат": {
-        "cycle_days": (30, 45), "ph": "6.0–7.0", "ec": "1.6–2.0",
-        "temperature_c": "15–20", "humidity_pct": "50–70", "light_hours": 14,
-        "water_l_per_sqm_day": 2.5, "solution_change_days": 7, "germination_days": (7, 10),
-        "daily_checks": "горечь нарастает при длинном дне >14 ч — строго соблюдай световой режим",
+        "cycle_days": (30, 45),
+        "ph": "6.0–7.0",
+        "ec": "1.6–2.0",
+        "temperature_c": "15–20",
+        "humidity_pct": "50–70",
+        "light_hours": 14,
+        "water_l_per_sqm_day": 2.5,
+        "solution_change_days": 7,
+        "germination_days": (7, 10),
+        "daily_checks": "контроль длины светового дня и горечи",
         "harvest_sign": "5–6 настоящих листьев, высота 15–20 см",
-        "margin_note": "спрос со стороны HoReCa, диетпитание",
-        "yield_kg_per_sqm": 2.8, "power_kw_per_sqm": 22.0,
-        "seed_cost_per_sqm": 145.0, "nutrition_cost_per_sqm": 88.0,
+        "margin_note": "спрос со стороны HoReCa и диетического питания",
+        "yield_kg_per_sqm": 2.8,
+        "power_kw_per_sqm": 22.0,
+        "seed_cost_per_sqm": 145.0,
+        "nutrition_cost_per_sqm": 88.0,
     },
 }
 
-
-# ---------------------------------------------------------------------------
-# Погода
-# ---------------------------------------------------------------------------
-
-def _get_weather_forecast(region: str) -> str:
-    normalized = (region or "").strip() or "Москва"
-    try:
-        geo = requests.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
-            params={"name": normalized, "count": 1, "language": "ru", "format": "json"},
-            timeout=5,
-        )
-        geo.raise_for_status()
-        results = geo.json().get("results") or []
-    except requests.exceptions.RequestException:
-        return WEATHER_ERROR_TEXT
-
-    if not results:
-        return f"Координаты для «{normalized}» не найдены"
-
-    loc = results[0]
-    lat, lon = loc.get("latitude"), loc.get("longitude")
-    if lat is None or lon is None:
-        return WEATHER_ERROR_TEXT
-
-    try:
-        wx = requests.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": lat, "longitude": lon,
-                "current": "temperature_2m,relative_humidity_2m",
-                "daily": "temperature_2m_max,temperature_2m_min",
-                "timezone": "auto",
-            },
-            timeout=5,
-        )
-        wx.raise_for_status()
-        payload = wx.json()
-    except requests.exceptions.RequestException:
-        return WEATHER_ERROR_TEXT
-
-    cur = payload.get("current", {})
-    t, h = cur.get("temperature_2m"), cur.get("relative_humidity_2m")
-    if t is None or h is None:
-        return WEATHER_ERROR_TEXT
-
-    daily = payload.get("daily", {})
-    dates = daily.get("time", [])
-    mx = daily.get("temperature_2m_max", [])
-    mn = daily.get("temperature_2m_min", [])
-    forecast = ", ".join(
-        f"{d}: {lo}…{hi}°C"
-        for d, lo, hi in list(zip(dates, mn, mx))[:3]
-        if None not in (d, lo, hi)
-    )
-    name = loc.get("name", normalized)
-    return f"{name}: сейчас {t}°C, влажность {h}%. Прогноз: {forecast}"
+SYSTEM_PROMPT = """
+You are an expert agronomist announcer. Your only job is to smoothly and empathetically present the facts provided in <CALCULATED_ECONOMICS>.
+STRICT PROHIBITION: Do not perform any mathematical calculations. Use only the numbers explicitly provided in the context.
+If the context lacks specific financial data (Scenarios B or C), you MUST end your response with a polite, clarifying question (e.g., asking for their room's square footage).
+Provide exactly one care recommendation based on the <WEATHER> block.
+Use the user's language. Keep the response concise and factual.
+Do not invent prices, profits, cycle lengths, площади, урожайность or расходы.
+If <CALCULATED_ECONOMICS> contains "clarification_required: yes", finish with one polite clarifying question.
+Structure the answer like this:
+1. A short conclusion in 1-2 sentences.
+2. 2-4 bullet points with facts from <CALCULATED_ECONOMICS>.
+3. Exactly one care recommendation based on <WEATHER>.
+4. One clarifying question only when clarification_required: yes.
+""".strip()
 
 
-# ---------------------------------------------------------------------------
-# Вспомогательные функции
-# ---------------------------------------------------------------------------
+def _normalize_text(value: str) -> str:
+    cleaned = str(value or "").strip().lower().replace("ё", "е")
+    cleaned = re.sub(r"[^\w\s.%/+:-]", " ", cleaned)
+    return " ".join(cleaned.split())
+
 
 def _normalize_region(value: str) -> str:
-    return " ".join(str(value or "").strip().lower().replace("ё", "е").split())
+    normalized = _normalize_text(value)
+    return normalized.title() if normalized else DEFAULT_REGION
 
 
-def _region_match(region_value: str, user_region: str) -> bool:
-    rv = _normalize_region(region_value)
-    ur = _normalize_region(user_region)
-    return bool(rv and ur and ur in rv)
-
-
-def _detect_requested_culture(user_message: str, history: list[dict]) -> str:
-    searchable = " ".join(
-        [*(str(item.get("content", "")) for item in history[-4:]), user_message]
-    ).lower()
-    for name in sorted(AGRO_HANDBOOK.keys(), key=len, reverse=True):
-        if name.lower() in searchable:
-            return name
-    return ""
-
-
-def _extract_numbers_from_message(
-    user_message: str, farm_profile: dict
-) -> tuple[float, float]:
-    """Извлекает площадь и тариф из сообщения, фолбэк — из farm_profile."""
-    farm_area = float((farm_profile or {}).get("total_area_sqm", 0.0) or 0.0)
-    energy_price = float((farm_profile or {}).get("energy_price_kwh", 0.0) or 0.0)
-
-    area_patterns = [
-        r"(\d+[\.,]?\d*)\s*(?:кв\.?\s*м|м2|m2|квадрат\w*)",
-        r"(?:площадь|площади)[^\d]*(\d+[\.,]?\d*)",
-        r"(\d+[\.,]?\d*)\s*(?:кв|sq)\b",
-    ]
-    for pat in area_patterns:
-        m = re.search(pat, user_message, re.IGNORECASE)
-        if m:
-            try:
-                farm_area = float(m.group(1).replace(",", "."))
-                break
-            except ValueError:
-                pass
-
-    tariff_patterns = [
-        r"тариф[^\d]*(\d+[\.,]?\d*)",
-        r"(\d+[\.,]?\d*)\s*руб[^\w]*(?:за\s*)?(?:квт|кВт|kw)",
-        r"электр\w*[^\d]*(\d+[\.,]?\d*)",
-        r"(?:свет|электро)[^\d]*(\d+[\.,]?\d*)",
-    ]
-    for pat in tariff_patterns:
-        m = re.search(pat, user_message, re.IGNORECASE)
-        if m:
-            try:
-                val = float(m.group(1).replace(",", "."))
-                if 1.0 <= val <= 30.0:
-                    energy_price = val
-                    break
-            except ValueError:
-                pass
-
-    return farm_area, energy_price
-
-
-def _extract_average_price(market_summary: str) -> float | None:
-    m = re.search(r"Средняя цена:\s*([\d.]+)", market_summary)
-    if not m:
+def _parse_number(value_text: str, suffix: str = "") -> float | None:
+    raw_value = (value_text or "").replace(" ", "").replace(",", ".")
+    if not raw_value:
         return None
+
     try:
-        return float(m.group(1))
+        value = float(raw_value)
     except ValueError:
         return None
 
+    normalized_suffix = _normalize_text(suffix)
+    if normalized_suffix in {"к", "тыщ", "тыща", "тыщи", "тыс", "тысяч", "тысяча"}:
+        value *= 1_000
+    elif normalized_suffix in {"м", "млн", "миллион", "миллиона", "миллионов"}:
+        value *= 1_000_000
+    return value
 
-# ---------------------------------------------------------------------------
-# Контекстные блоки
-# ---------------------------------------------------------------------------
 
-def _build_handbook_context_filtered(today: datetime, culture: str) -> str:
-    """
-    Полная карточка — только для запрошенной культуры.
-    Без культуры — компактная таблица всех (~300 токенов вместо ~1800).
-    """
-    lines = ["<AGRO_HANDBOOK>"]
+def _extract_area_sqm(normalized_message: str) -> float | None:
+    patterns = (
+        r"(?P<value>\d+(?:[.,]\d+)?)\s*(?:м2|м²|кв\.?\s*м|кв\b|квадрат(?:а|ов)?|метр(?:а|ов)?(?:\s+квадрат\w+)?)",
+        r"(?:площад[ья]|помещени[ея]|комнат[аы])[^0-9]{0,20}(?P<value>\d+(?:[.,]\d+)?)\s*(?:м2|м²|кв\.?\s*м|кв\b|квадрат(?:а|ов)?)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized_message, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = _parse_number(match.group("value"))
+        if value and value > 0:
+            return value
+    return None
 
-    if culture and culture in AGRO_HANDBOOK:
-        p = AGRO_HANDBOOK[culture]
-        lo, hi = p["cycle_days"]
-        glo, ghi = p["germination_days"]
-        harvest_from = (today + timedelta(days=lo)).strftime("%Y-%m-%d")
-        harvest_to = (today + timedelta(days=hi)).strftime("%Y-%m-%d")
-        lines.append(
-            f"  [{culture}]\n"
-            f"    Цикл: {lo}–{hi} дн. | Прорастание: {glo}–{ghi} дн.\n"
-            f"    Посев сегодня → сбор: {harvest_from} — {harvest_to}\n"
-            f"    pH: {p['ph']} | EC: {p['ec']} мСм/см\n"
-            f"    t°: {p['temperature_c']}°C | Влажность: {p['humidity_pct']}%\n"
-            f"    Свет: {p['light_hours']} ч/сут | Вода: {p['water_l_per_sqm_day']} л/м²/сут\n"
-            f"    Смена раствора: каждые {p['solution_change_days']} дн.\n"
-            f"    Урожай: {p['yield_kg_per_sqm']} кг/м² | Свет-расход: {p['power_kw_per_sqm']} кВт·ч/м²\n"
-            f"    Семена+субстрат: {p['seed_cost_per_sqm']} руб/м² | Питание: {p['nutrition_cost_per_sqm']} руб/м²\n"
-            f"    Контроль: {p['daily_checks']}\n"
-            f"    Готовность: {p['harvest_sign']}\n"
-            f"    Коммерция: {p['margin_note']}"
+
+def _extract_target_budget(normalized_message: str) -> float | None:
+    patterns = (
+        r"(?:бюджет|влож(?:ить|ения|усь|ение)?|капитал|инвест(?:ировать|иций|иции)?)[^0-9]{0,20}(?P<value>\d+(?:[.,]\d+)?)\s*(?P<suffix>к|тыщ(?:а|и)?|тыс(?:яч)?|млн|м)?",
+        r"(?:хочу\s+заработать|заработать|доход|выручк[аи]|прибыл[ьи])[^0-9]{0,20}(?P<value>\d+(?:[.,]\d+)?)\s*(?P<suffix>к|тыщ(?:а|и)?|тыс(?:яч)?|млн|м)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized_message, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = _parse_number(match.group("value"), match.group("suffix") or "")
+        if value and value > 0:
+            return value
+    return None
+
+
+def _extract_culture(normalized_message: str) -> str | None:
+    normalized_lookup = {_normalize_text(name): name for name in AGRO_HANDBOOK}
+
+    for normalized_name, original_name in normalized_lookup.items():
+        if normalized_name in normalized_message:
+            return original_name
+
+    tokens = re.findall(r"[a-zа-я0-9]+", normalized_message)
+    candidates: set[str] = {normalized_message}
+    max_window = min(3, len(tokens))
+    for size in range(1, max_window + 1):
+        for idx in range(len(tokens) - size + 1):
+            candidates.add(" ".join(tokens[idx : idx + size]))
+
+    for candidate in sorted(candidates, key=len, reverse=True):
+        matches = get_close_matches(candidate, list(normalized_lookup.keys()), n=1, cutoff=0.72)
+        if matches:
+            return normalized_lookup[matches[0]]
+
+    return None
+
+
+def extract_user_intent(user_message: str) -> dict[str, str | float | None]:
+    normalized_message = _normalize_text(user_message)
+    return {
+        "culture": _extract_culture(normalized_message),
+        "area_sqm": _extract_area_sqm(normalized_message),
+        "target_budget": _extract_target_budget(normalized_message),
+    }
+
+
+def _extract_energy_price(user_message: str, farm_profile: dict[str, Any]) -> float | None:
+    normalized_message = _normalize_text(user_message)
+    patterns = (
+        r"тариф[^0-9]{0,20}(?P<value>\d+(?:[.,]\d+)?)",
+        r"электр\w*[^0-9]{0,20}(?P<value>\d+(?:[.,]\d+)?)",
+        r"(?P<value>\d+(?:[.,]\d+)?)\s*руб[^a-zа-я0-9]{0,8}(?:за\s*)?(?:квт|квтч|квт\*ч|kw)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized_message, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = _parse_number(match.group("value"))
+        if value and 0 < value <= 100:
+            return value
+
+    fallback = float((farm_profile or {}).get("energy_price_kwh", 0.0) or 0.0)
+    return fallback if fallback > 0 else None
+
+
+def _get_market_snapshot(culture: str, region: str) -> tuple[dict[str, Any] | None, str]:
+    normalized_region = _normalize_region(region)
+    try:
+        region_snapshot = get_aggregated_prices(culture, normalized_region)
+    except Exception:
+        region_snapshot = None
+
+    if region_snapshot:
+        return region_snapshot, normalized_region
+
+    try:
+        global_snapshot = get_aggregated_prices(culture, "")
+    except Exception:
+        global_snapshot = None
+
+    if global_snapshot:
+        return global_snapshot, "Россия"
+
+    return None, normalized_region
+
+
+def _format_currency(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")
+
+
+def _format_crop_conditions(culture: str, today: datetime) -> str:
+    culture_data = AGRO_HANDBOOK[culture]
+    cycle_from, cycle_to = culture_data["cycle_days"]
+    harvest_from = (today + timedelta(days=cycle_from)).strftime("%Y-%m-%d")
+    harvest_to = (today + timedelta(days=cycle_to)).strftime("%Y-%m-%d")
+    return (
+        f"{culture}: цикл {cycle_from}-{cycle_to} дней, pH {culture_data['ph']}, "
+        f"EC {culture_data['ec']}, температура {culture_data['temperature_c']}°C, "
+        f"влажность {culture_data['humidity_pct']}%, свет {culture_data['light_hours']} ч/сут, "
+        f"ориентир по сбору при посеве сегодня {harvest_from} - {harvest_to}."
+    )
+
+
+def _build_exact_match_context(
+    culture: str,
+    area_sqm: float,
+    region: str,
+    energy_price_kwh: float | None,
+    target_budget: float | None,
+    today: datetime,
+) -> str:
+    snapshot, price_scope = _get_market_snapshot(culture, region)
+    culture_data = AGRO_HANDBOOK[culture]
+    lines = [
+        "<CALCULATED_ECONOMICS>",
+        "scenario: exact_match",
+        "clarification_required: no",
+        f"Культура: {culture}",
+        f"Площадь: {area_sqm:.1f} м²",
+    ]
+
+    if target_budget:
+        lines.append(f"Целевая сумма пользователя: {_format_currency(target_budget)} руб.")
+
+    lines.append(_format_crop_conditions(culture, today))
+
+    if energy_price_kwh is None:
+        lines[2] = "clarification_required: yes"
+        lines.append("Финансовый расчёт не завершён: не указан тариф на электроэнергию.")
+        lines.append("</CALCULATED_ECONOMICS>")
+        return "\n".join(lines)
+
+    lines.append(f"Тариф электроэнергии: {energy_price_kwh:.2f} руб/кВт·ч")
+
+    if not snapshot or snapshot.get("avg") is None:
+        lines[2] = "clarification_required: yes"
+        lines.append("Финансовый расчёт не завершён: нет рыночной цены за последние 7 дней.")
+        lines.append("</CALCULATED_ECONOMICS>")
+        return "\n".join(lines)
+
+    economics = EconomicsCalculator.calculate_cycle_economics(
+        area_sqm=area_sqm,
+        energy_price_kwh=energy_price_kwh,
+        market_price_per_kg=float(snapshot["avg"]),
+        culture_data=culture_data,
+    )
+    cycle_from, cycle_to = culture_data["cycle_days"]
+    lines.extend(
+        [
+            f"Источник цены: {price_scope}",
+            f"Средняя рыночная цена: {float(snapshot['avg']):.2f} руб/кг",
+            f"Диапазон цены: {float(snapshot['min']):.2f}-{float(snapshot['max']):.2f} руб/кг",
+            f"Наблюдений за 7 дней: {int(snapshot['count'])}",
+            f"Длительность цикла: {cycle_from}-{cycle_to} дней",
+            f"Расходы на свет: {_format_currency(economics['energy_cost'])} руб.",
+            f"Расходы на материалы: {_format_currency(economics['materials_cost'])} руб.",
+            f"Общие расходы: {_format_currency(economics['total_expenses'])} руб.",
+            f"Ожидаемый урожай: {economics['expected_yield_kg']:.1f} кг",
+            f"Ожидаемая выручка: {_format_currency(economics['expected_revenue'])} руб.",
+            f"Ожидаемая чистая прибыль: {_format_currency(economics['net_profit'])} руб.",
+        ]
+    )
+    lines.append("</CALCULATED_ECONOMICS>")
+    return "\n".join(lines)
+
+
+def _build_profit_hunt_context(
+    area_sqm: float,
+    region: str,
+    energy_price_kwh: float | None,
+    target_budget: float | None,
+    today: datetime,
+) -> str:
+    lines = [
+        "<CALCULATED_ECONOMICS>",
+        "scenario: profit_hunt",
+        "clarification_required: yes",
+        f"Площадь: {area_sqm:.1f} м²",
+        "Формат запроса: нужна лучшая культура по прибыли, но культура явно не указана.",
+    ]
+
+    if target_budget:
+        lines.append(f"Целевая сумма пользователя: {_format_currency(target_budget)} руб.")
+
+    if energy_price_kwh is None:
+        lines.append("Финансовое ранжирование недоступно: не указан тариф на электроэнергию.")
+        lines.append("</CALCULATED_ECONOMICS>")
+        return "\n".join(lines)
+
+    lines.append(f"Тариф электроэнергии: {energy_price_kwh:.2f} руб/кВт·ч")
+
+    scored_cultures: list[dict[str, Any]] = []
+    for culture, culture_data in AGRO_HANDBOOK.items():
+        snapshot, price_scope = _get_market_snapshot(culture, region)
+        if not snapshot or snapshot.get("avg") is None:
+            continue
+
+        economics = EconomicsCalculator.calculate_cycle_economics(
+            area_sqm=area_sqm,
+            energy_price_kwh=energy_price_kwh,
+            market_price_per_kg=float(snapshot["avg"]),
+            culture_data=culture_data,
         )
-    else:
-        lines.append("  Культура | цикл дн | pH | EC | урожай кг/м² | затраты руб/м²")
-        for name, p in AGRO_HANDBOOK.items():
-            lo, hi = p["cycle_days"]
-            hf = (today + timedelta(days=lo)).strftime("%d.%m")
-            ht = (today + timedelta(days=hi)).strftime("%d.%m")
-            costs = p["seed_cost_per_sqm"] + p["nutrition_cost_per_sqm"]
-            lines.append(
-                f"  {name}: {lo}–{hi} дн ({hf}–{ht}) | "
-                f"pH {p['ph']} | EC {p['ec']} | "
-                f"{p['yield_kg_per_sqm']} кг/м² | ~{costs:.0f} руб/м²"
-            )
-
-    lines.append("</AGRO_HANDBOOK>")
-    return "\n".join(lines)
-
-
-def _build_demand_context(user_region: str) -> str:
-    df = get_latest_demand_signals_frame()
-    if df.empty:
-        return "<TENDERS>НЕТ АКТИВНЫХ ТЕНДЕРОВ</TENDERS>"
-
-    local_mask = df["region"].fillna("").apply(lambda v: _region_match(v, user_region))
-    local = df[local_mask].sort_values(
-        ["published_at", "contract_price"], ascending=[False, False]
-    ).head(5)
-
-    if local.empty:
-        return "<TENDERS>Тендеров в регионе не найдено</TENDERS>"
-
-    lines = ["<TENDERS>"]
-    for row in local.itertuples(index=False):
-        lines.append(
-            f"  - {row.crop_name} | {row.contract_price:.0f} руб. | "
-            f"{row.published_at.strftime('%Y-%m-%d')} | {row.url}"
+        scored_cultures.append(
+            {
+                "culture": culture,
+                "price_scope": price_scope,
+                "market_avg": float(snapshot["avg"]),
+                "net_profit": float(economics["net_profit"]),
+                "total_expenses": float(economics["total_expenses"]),
+                "expected_revenue": float(economics["expected_revenue"]),
+                "cycle_days": culture_data["cycle_days"],
+            }
         )
-    lines.append("</TENDERS>")
+
+    if not scored_cultures:
+        lines.append("Финансовое ранжирование недоступно: в базе нет актуальных рыночных цен по культурам.")
+        lines.append("</CALCULATED_ECONOMICS>")
+        return "\n".join(lines)
+
+    top_cultures = sorted(scored_cultures, key=lambda item: item["net_profit"], reverse=True)[:2]
+    lines.append("Топ-2 культуры по ожидаемой чистой прибыли для указанной площади:")
+    for index, item in enumerate(top_cultures, start=1):
+        cycle_from, cycle_to = item["cycle_days"]
+        lines.append(
+            f"{index}. {item['culture']} — прибыль {_format_currency(item['net_profit'])} руб., "
+            f"выручка {_format_currency(item['expected_revenue'])} руб., расходы {_format_currency(item['total_expenses'])} руб., "
+            f"средняя цена {item['market_avg']:.2f} руб/кг, цикл {cycle_from}-{cycle_to} дней, источник цены {item['price_scope']}."
+        )
+
+    lines.append(f"Быстрый старт для новичка: {_format_crop_conditions(EASIEST_CULTURE, today)}")
+    lines.append("</CALCULATED_ECONOMICS>")
     return "\n".join(lines)
 
 
-def _build_news_context() -> str:
-    items = get_recent_news(limit=3)
-    if not items:
-        return "<NEWS>НЕТ СВЕЖИХ НОВОСТЕЙ</NEWS>"
-    lines = ["<NEWS>"]
-    for item in items:
-        lines.append(f"  - {item['published_at'].strftime('%Y-%m-%d')} | {item['title']}")
-    lines.append("</NEWS>")
+def _build_beginner_context(
+    intent: dict[str, str | float | None],
+    target_budget: float | None,
+    today: datetime,
+) -> str:
+    detected_culture = intent["culture"]
+    lines = [
+        "<CALCULATED_ECONOMICS>",
+        "scenario: beginner",
+        "clarification_required: yes",
+        "Финансовый расчёт не выполнялся: площадь помещения не указана.",
+    ]
+
+    if detected_culture:
+        lines.append(f"Распознан интерес к культуре: {detected_culture}.")
+
+    if target_budget:
+        lines.append(f"Целевая сумма пользователя: {_format_currency(target_budget)} руб.")
+
+    lines.append(f"Лёгкая культура для старта: {_format_crop_conditions(EASIEST_CULTURE, today)}")
+    lines.append(f"Высокомаржинальная культура: {_format_crop_conditions(HIGH_MARGIN_CULTURE, today)}")
+    lines.append("</CALCULATED_ECONOMICS>")
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Системный промпт
-# ---------------------------------------------------------------------------
+def build_economics_context(
+    intent: dict[str, str | float | None],
+    region: str,
+    energy_price_kwh: float | None,
+) -> str:
+    today = datetime.now()
+    culture = intent["culture"]
+    area_sqm = intent["area_sqm"]
+    target_budget = intent["target_budget"]
 
-SYSTEM_PROMPT = """Ты — агроном-технолог сити-фермы (гидропоника, аэропоника). Даёшь КОНКРЕТНЫЕ инструкции только на основе переданных данных.
+    if culture and area_sqm:
+        return _build_exact_match_context(
+            culture=culture,
+            area_sqm=float(area_sqm),
+            region=region,
+            energy_price_kwh=energy_price_kwh,
+            target_budget=float(target_budget) if target_budget else None,
+            today=today,
+        )
 
-ПРАВИЛА:
-1. Только данные из <AGRO_HANDBOOK>, <PRICES>, <TENDERS>, <NEWS>, <WEATHER>, <FARM_STATE>, <CALCULATED_ECONOMICS>.
-2. Нет данных — пиши «данных нет». Не придумывай цифры.
-3. Никаких эмодзи. Конкретные числа вместо диапазонов.
-4. При рекомендации культуры: дата сбора + цена + тенденция + тендер.
-5. Финансы — только из <CALCULATED_ECONOMICS>, сам не считай.
-6. Уход — пошаговый чек-лист с числами.
+    if area_sqm:
+        return _build_profit_hunt_context(
+            area_sqm=float(area_sqm),
+            region=region,
+            energy_price_kwh=energy_price_kwh,
+            target_budget=float(target_budget) if target_budget else None,
+            today=today,
+        )
 
-РЕЖИМ КАЛЬКУЛЯТОРА: есть площадь → выручка и прибыль из CALCULATED_ECONOMICS.
-РЕЖИМ СОВЕТНИКА: «хочу заработать Y» → площадь = Y / (прибыль на 1 м²) из CALCULATED_ECONOMICS.
-
-ФОРМАТ:
-— Вывод (1–2 предложения)
-— Детали по пунктам или таблицей
-— «Следующий шаг» — одно действие прямо сейчас
-"""
+    return _build_beginner_context(
+        intent=intent,
+        target_budget=float(target_budget) if target_budget else None,
+        today=today,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Основная функция
-# ---------------------------------------------------------------------------
+def get_weather_context(region: str) -> str:
+    normalized_region = _normalize_region(region)
+    return f"{normalized_region}: температура +5°C, пасмурно, высокая влажность воздуха."
+
 
 def chat_with_ai(
     user_message: str,
-    history: list[dict],
+    history: list[dict[str, Any]],
     user_region: str,
-    farm_profile: dict,
+    farm_profile: dict[str, Any],
 ) -> str:
-    now = datetime.now()
-    region = (user_region or "").strip() or "Москва"
-
-    farm_area, energy_price = _extract_numbers_from_message(user_message, farm_profile)
-    requested_culture = _detect_requested_culture(user_message, history)
-
-    retriever = DataRetriever()
-    market_summary = retriever.get_aggregated_context(requested_culture, region)
-    market_price_per_kg = _extract_average_price(market_summary)
-    if market_price_per_kg is None:
-        market_price_per_kg = 0.0
-
-    weather = _get_weather_forecast(region)
-    handbook_block = _build_handbook_context_filtered(now, requested_culture)
-    demand_block = _build_demand_context(region)
-    news_block = _build_news_context()
-
-    farm_state_block = (
-        "<FARM_STATE>\n"
-        f"  Площадь: {farm_area} м²\n"
-        f"  Тариф: {energy_price} руб/кВт·ч\n"
-        "</FARM_STATE>"
-    )
-    prices_block = f"<PRICES>{market_summary}</PRICES>"
-
-    if (
-        requested_culture and requested_culture in AGRO_HANDBOOK
-        and farm_area > 0 and energy_price > 0 and market_price_per_kg > 0
-    ):
-        economics = EconomicsCalculator.calculate_cycle_economics(
-            area_sqm=farm_area,
-            energy_price_kwh=energy_price,
-            market_price_per_kg=market_price_per_kg,
-            culture_data=AGRO_HANDBOOK[requested_culture],
-        )
-        per_sqm = economics["net_profit"] / farm_area
-        economics_block = (
-            "<CALCULATED_ECONOMICS>\n"
-            f"  {requested_culture} | {farm_area} м²\n"
-            f"  Свет: {economics['energy_cost']:.0f} руб | "
-            f"Материалы: {economics['materials_cost']:.0f} руб | "
-            f"Расходы: {economics['total_expenses']:.0f} руб\n"
-            f"  Урожай: {economics['expected_yield_kg']:.1f} кг | "
-            f"Выручка: {economics['expected_revenue']:.0f} руб | "
-            f"Прибыль: {economics['net_profit']:.0f} руб\n"
-            f"  Прибыль/м²: {per_sqm:.0f} руб\n"
-            "</CALCULATED_ECONOMICS>"
-        )
-    else:
-        missing = []
-        if not requested_culture:
-            missing.append("культура не определена")
-        if farm_area <= 0:
-            missing.append("площадь не указана")
-        if energy_price <= 0:
-            missing.append("тариф не указан")
-        if market_price_per_kg <= 0:
-            missing.append("рыночная цена недоступна")
-        economics_block = (
-            f"<CALCULATED_ECONOMICS>Расчёт невозможен: {', '.join(missing)}.</CALCULATED_ECONOMICS>"
-        )
-
-    system_prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"{farm_state_block}\n\n"
-        f"{prices_block}\n\n"
-        f"{economics_block}"
-    )
+    region = _normalize_region(user_region)
+    intent = extract_user_intent(user_message)
+    energy_price_kwh = _extract_energy_price(user_message, farm_profile)
+    economics_block = build_economics_context(intent, region, energy_price_kwh)
+    weather_block = get_weather_context(region) or WEATHER_ERROR_TEXT
 
     user_prompt = (
         f"<CONTEXT>\n"
-        f"Дата: {now.strftime('%Y-%m-%d %H:%M')} | Регион: {region}\n"
-        f"<WEATHER>{weather}</WEATHER>\n\n"
-        f"{handbook_block}\n\n"
-        f"{demand_block}\n\n"
-        f"{news_block}\n"
+        f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Регион: {region}\n"
+        f"<WEATHER>{weather_block}</WEATHER>\n"
+        f"{economics_block}\n"
         f"</CONTEXT>\n\n"
         f"<QUESTION>{user_message}</QUESTION>"
     )
 
-    messages: list[dict] = [{"role": "system", "content": system_prompt}]
-
+    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for item in history[-4:]:
         role = str(item.get("role", "")).strip()
         content = str(item.get("content", "")).strip()
         if role in {"user", "assistant"} and content:
             messages.append({"role": role, "content": content})
-
     messages.append({"role": "user", "content": user_prompt})
 
     try:
@@ -480,12 +618,12 @@ def chat_with_ai(
                 "stream": False,
                 "keep_alive": "1h",
                 "options": {
-                    "temperature": 0.3,
+                    "temperature": 0.2,
                     "top_p": 0.85,
-                    "repeat_penalty": 1.15,
-                    "num_ctx": 4096,    # Было 8192 — вдвое меньше VRAM под KV-cache
-                    "num_gpu": 99,       # Все слои на GPU принудительно
-                    "num_predict": 2048,  # Ограничение длины ответа
+                    "repeat_penalty": 1.1,
+                    "num_ctx": 4096,
+                    "num_gpu": 99,
+                    "num_predict": 2048,
                 },
                 "stop": ["<|im_end|>", "<|im_start|>", "<|endoftext|>", "</s>"],
             },
@@ -500,7 +638,6 @@ def chat_with_ai(
             content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
         return content or "Модель не вернула ответ."
-
     except requests.exceptions.RequestException as exc:
         return f"Ошибка соединения с Ollama: {exc}"
     except ValueError as exc:
