@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,14 +15,34 @@ from agromind.parsers.news import fetch_news_from_feeds
 from agromind.parsers.prices import fetch_all_prices
 
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Рабочие RSS-ленты новостей (проверены на 2026-04)
+# ---------------------------------------------------------------------------
+NEWS_FEEDS_ACTIVE = (
+    "https://www.agroinvestor.ru/rss/public-agronews.xml",
+    "https://www.agroinvestor.ru/rss/public-agroanalytics.xml",
+    "https://glavagronom.ru/feed/",
+    # fermer.ru отключён — отдаёт 403/timeout стабильно
+)
+
+
+def _try_write_influx(crop_name: str, region: str, price: float) -> None:
+    """Пишет цену в InfluxDB. Ошибку логирует, не бросает."""
+    try:
+        from agromind.influx_client import write_price
+        write_price(crop_name, region, price)
+    except Exception as exc:
+        logger.debug("InfluxDB write skipped: %s", exc)
+
+
 def save_news(session: Session, items: list[dict[str, Any]]) -> int:
     added = 0
-
     for item in items:
         exists = session.scalar(select(News.id).where(News.url == item["url"]))
         if exists:
             continue
-
         session.add(
             News(
                 title=item["title"],
@@ -30,13 +51,11 @@ def save_news(session: Session, items: list[dict[str, Any]]) -> int:
             )
         )
         added += 1
-
     return added
 
 
 def save_price_summaries(session: Session, items: list[dict[str, Any]]) -> int:
     added = 0
-
     for item in items:
         exists_stmt: Select[tuple[int]] = select(PriceSummary.id).where(
             and_(
@@ -58,19 +77,24 @@ def save_price_summaries(session: Session, items: list[dict[str, Any]]) -> int:
                 region=item["region"],
             )
         )
+        # Параллельно пишем в InfluxDB для графиков и RAG
+        _try_write_influx(
+            item["crop_name"],
+            item["region"],
+            float(item["wholesale_price"]),
+        )
         added += 1
-
     return added
 
 
 def save_demand_signals(session: Session, items: list[dict[str, Any]]) -> int:
     added = 0
-
     for item in items:
-        exists = session.scalar(select(DemandSignal.id).where(DemandSignal.url == item["url"]))
+        exists = session.scalar(
+            select(DemandSignal.id).where(DemandSignal.url == item["url"])
+        )
         if exists:
             continue
-
         session.add(
             DemandSignal(
                 crop_name=item["crop_name"],
@@ -81,7 +105,6 @@ def save_demand_signals(session: Session, items: list[dict[str, Any]]) -> int:
             )
         )
         added += 1
-
     return added
 
 
@@ -98,13 +121,12 @@ def refresh_data() -> dict[str, Any]:
     demand_items: list[dict[str, Any]] = []
 
     try:
-        news_items = fetch_news_from_feeds()
+        news_items = fetch_news_from_feeds(feeds=NEWS_FEEDS_ACTIVE)
     except Exception as exc:
         result["errors"].append(f"News parsing error: {exc}")
 
     try:
         from agromind.ai_analyzer import AGRO_HANDBOOK
-
         demand_items = fetch_demand_signals(list(AGRO_HANDBOOK.keys()))
     except Exception as exc:
         result["errors"].append(f"Demand parsing error: {exc}")
@@ -138,15 +160,7 @@ def get_recent_news(limit: int = 20) -> list[dict[str, Any]]:
     with session_scope() as session:
         stmt = select(News).order_by(desc(News.published_at)).limit(limit)
         rows = session.scalars(stmt).all()
-
-    return [
-        {
-            "title": row.title,
-            "published_at": row.published_at,
-            "url": row.url,
-        }
-        for row in rows
-    ]
+    return [{"title": r.title, "published_at": r.published_at, "url": r.url} for r in rows]
 
 
 def get_price_history_frame(days: int, crop_names: list[str] | None = None) -> pd.DataFrame:
@@ -157,33 +171,26 @@ def get_price_history_frame(days: int, crop_names: list[str] | None = None) -> p
             PriceSummary.crop_name.asc(),
             PriceSummary.region.asc(),
         )
-
         if crop_names:
             stmt = stmt.where(PriceSummary.crop_name.in_(crop_names))
-
         if days > 0:
             stmt = stmt.where(
                 PriceSummary.published_at >= datetime.utcnow() - timedelta(days=days)
             )
-
         rows = session.scalars(stmt).all()
 
     if not rows:
-        return pd.DataFrame(
-            columns=["timestamp", "crop_name", "region", "wholesale_price"]
-        )
+        return pd.DataFrame(columns=["timestamp", "crop_name", "region", "wholesale_price"])
 
-    return pd.DataFrame(
-        [
-            {
-                "timestamp": row.published_at,
-                "crop_name": row.crop_name,
-                "region": row.region,
-                "wholesale_price": row.wholesale_price,
-            }
-            for row in rows
-        ]
-    )
+    return pd.DataFrame([
+        {
+            "timestamp": r.published_at,
+            "crop_name": r.crop_name,
+            "region": r.region,
+            "wholesale_price": r.wholesale_price,
+        }
+        for r in rows
+    ])
 
 
 def get_latest_prices_frame(crop_names: list[str] | None = None) -> pd.DataFrame:
@@ -198,7 +205,6 @@ def get_latest_prices_frame(crop_names: list[str] | None = None) -> pd.DataFrame
             .group_by(PriceSummary.crop_name, PriceSummary.region)
             .subquery()
         )
-
         stmt = (
             select(PriceSummary)
             .join(
@@ -211,28 +217,22 @@ def get_latest_prices_frame(crop_names: list[str] | None = None) -> pd.DataFrame
             )
             .order_by(PriceSummary.crop_name.asc(), PriceSummary.region.asc())
         )
-
         if crop_names:
             stmt = stmt.where(PriceSummary.crop_name.in_(crop_names))
-
         rows = session.scalars(stmt).all()
 
     if not rows:
-        return pd.DataFrame(
-            columns=["crop_name", "region", "published_at", "wholesale_price"]
-        )
+        return pd.DataFrame(columns=["crop_name", "region", "published_at", "wholesale_price"])
 
-    return pd.DataFrame(
-        [
-            {
-                "crop_name": row.crop_name,
-                "region": row.region,
-                "published_at": row.published_at,
-                "wholesale_price": row.wholesale_price,
-            }
-            for row in rows
-        ]
-    )
+    return pd.DataFrame([
+        {
+            "crop_name": r.crop_name,
+            "region": r.region,
+            "published_at": r.published_at,
+            "wholesale_price": r.wholesale_price,
+        }
+        for r in rows
+    ])
 
 
 def get_latest_demand_signals_frame() -> pd.DataFrame:
@@ -246,35 +246,26 @@ def get_latest_demand_signals_frame() -> pd.DataFrame:
         rows = session.scalars(stmt).all()
 
     if not rows:
-        return pd.DataFrame(
-            columns=["crop_name", "region", "contract_price", "published_at", "url"]
-        )
+        return pd.DataFrame(columns=["crop_name", "region", "contract_price", "published_at", "url"])
 
-    return pd.DataFrame(
-        [
-            {
-                "crop_name": row.crop_name,
-                "region": row.region,
-                "contract_price": row.contract_price,
-                "published_at": row.published_at,
-                "url": row.url,
-            }
-            for row in rows
-        ]
-    )
+    return pd.DataFrame([
+        {
+            "crop_name": r.crop_name,
+            "region": r.region,
+            "contract_price": r.contract_price,
+            "published_at": r.published_at,
+            "url": r.url,
+        }
+        for r in rows
+    ])
 
 
 def get_farm_profile() -> dict[str, float]:
     init_db()
     with session_scope() as session:
         profile = session.get(FarmProfile, 1)
-
     if profile is None:
-        return {
-            "total_area_sqm": 0.0,
-            "energy_price_kwh": 0.0,
-        }
-
+        return {"total_area_sqm": 0.0, "energy_price_kwh": 0.0}
     return {
         "total_area_sqm": float(profile.total_area_sqm or 0.0),
         "energy_price_kwh": float(profile.energy_price_kwh or 0.0),
@@ -304,5 +295,4 @@ def get_crop_filters() -> list[str]:
     with session_scope() as session:
         stmt = select(PriceSummary.crop_name).distinct().order_by(PriceSummary.crop_name.asc())
         rows = session.scalars(stmt).all()
-
-    return [crop_name for crop_name in rows if crop_name]
+    return [r for r in rows if r]

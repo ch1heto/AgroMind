@@ -21,12 +21,8 @@ def _normalize_datetime(raw_value: Any) -> datetime | None:
 
     if isinstance(raw_value, struct_time):
         return datetime(
-            raw_value.tm_year,
-            raw_value.tm_mon,
-            raw_value.tm_mday,
-            raw_value.tm_hour,
-            raw_value.tm_min,
-            raw_value.tm_sec,
+            raw_value.tm_year, raw_value.tm_mon, raw_value.tm_mday,
+            raw_value.tm_hour, raw_value.tm_min, raw_value.tm_sec,
             tzinfo=timezone.utc,
         ).replace(tzinfo=None)
 
@@ -45,14 +41,29 @@ def _normalize_datetime(raw_value: Any) -> datetime | None:
     return None
 
 
-def fetch_news_from_feeds() -> list[dict[str, Any]]:
+def fetch_news_from_feeds(
+    feeds: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Парсит RSS-ленты новостей.
+    
+    Параметр feeds позволяет services.py передавать только рабочие ленты,
+    исключая битые (403, timeout). По умолчанию берёт NEWS_FEEDS из config.
+    """
+    active_feeds = feeds if feeds is not None else NEWS_FEEDS
+
     collected: list[dict[str, Any]] = []
     errors: list[str] = []
     seen_urls: set[str] = set()
 
-    for feed_url in NEWS_FEEDS:
+    for feed_url in active_feeds:
         try:
-            response = requests.get(feed_url, headers=REQUEST_HEADERS, timeout=20, verify=False)
+            response = requests.get(
+                feed_url,
+                headers=REQUEST_HEADERS,
+                timeout=15,  # Было 20 — сокращаем чтобы не подвисать
+                verify=False,
+            )
             response.raise_for_status()
             parsed_feed = feedparser.parse(response.content)
         except Exception as req_exc:
@@ -79,13 +90,7 @@ def fetch_news_from_feeds() -> list[dict[str, Any]]:
                 or datetime.utcnow()
             )
 
-            collected.append(
-                {
-                    "title": title,
-                    "published_at": published_at,
-                    "url": url,
-                }
-            )
+            collected.append({"title": title, "published_at": published_at, "url": url})
             seen_urls.add(url)
 
     if not collected and errors:
