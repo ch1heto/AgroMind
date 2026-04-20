@@ -9,7 +9,20 @@ class EconomicsCalculator:
         market_price_per_kg: float,
         culture_data: dict,
     ) -> dict:
-        energy_cost = area_sqm * culture_data["power_kw_per_sqm"] * energy_price_kwh
+        light_hours = float(culture_data.get("light_hours", 0))
+        cycle_days_data = culture_data.get("cycle_days", 0)
+        if isinstance(cycle_days_data, (tuple, list)):
+            cycle_days = float(cycle_days_data[-1]) if cycle_days_data else 0.0
+        else:
+            cycle_days = float(cycle_days_data or 0)
+
+        energy_cost = (
+            (culture_data.get("power_kw_per_sqm", 0) / 1000.0)
+            * light_hours
+            * cycle_days
+            * area_sqm
+            * energy_price_kwh
+        )
         materials_cost = area_sqm * (
             culture_data["seed_cost_per_sqm"] + culture_data["nutrition_cost_per_sqm"]
         )
