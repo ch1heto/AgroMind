@@ -13,3 +13,12 @@ __pycache__/
 # Файлы с секретами и ключами (на будущее)
 .env
 *.pdf
+.omx/
+.codex/*
+!.codex/agents/
+!.codex/agents/**
+!.codex/skills/
+!.codex/skills/**
+.codex/skills/.system/**
+!.codex/prompts/
+!.codex/prompts/**
