@@ -230,11 +230,12 @@ def render_chat_tab(farm_profile: dict[str, float]) -> None:
 
     with st.chat_message("assistant"):
         with st.spinner("Анализирую..."):
+            fresh_farm_profile = get_farm_profile()
             answer = chat_with_ai(
                 user_message=user_text,
                 history=history,
                 user_region=user_region,
-                farm_profile=farm_profile,
+                farm_profile=fresh_farm_profile,
             )
         st.markdown(answer)
 
