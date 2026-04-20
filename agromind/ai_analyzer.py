@@ -21,6 +21,7 @@ WEATHER_ERROR_TEXT = "Температура +5°C, пасмурно, высок
 DEFAULT_REGION = "Москва"
 EASIEST_CULTURE = "Салат"
 HIGH_MARGIN_CULTURE = "Базилик"
+DEFAULT_ENERGY_PRICE_KWH = 5.0  # дефолт если тариф не задан пользователем
 
 AGRO_HANDBOOK: dict[str, dict[str, Any]] = {
     "Базилик": {
@@ -230,17 +231,20 @@ SYSTEM_PROMPT = """
 2. НИКОГДА не используй XML-теги (например, <FARM_STATE>, <WEATHER> и т.д.) в своем финальном ответе. Твой ответ должен быть только чистым, читаемым текстом для обычного пользователя.
 3. Если грядки пусты (нет активного цикла), СТРОГО ЗАПРЕЩЕНО выдумывать день цикла (например, "0-й день"). Прямо скажи, что ферма пуста, и предложи выбрать культуру из списка.
 4. Строго запрещено самостоятельно считать новые финансовые цифры. Используй только те числа, что явно указаны в контексте.
-5. Если в контексте нет точного финансового расчета, в конце ответа задай один вежливый уточняющий вопрос (например, попроси указать тариф или площадь).
-6. Если в контексте указано попросить пользователя заполнить тариф в настройках дашборда, сформулируй это по-человечески, без упоминания внутренней логики скрипта.
+5. ВСЕГДА показывай финансовый расчёт из контекста: расходы на свет, семена, питание, ожидаемый урожай, выручку и чистую прибыль. Даже если тариф дефолтный — покажи расчёт с пометкой.
+6. ВСЕГДА объясняй ПОЧЕМУ именно эта культура: цикл роста, текущая рыночная цена, маржа, скорость оборота. Если есть рыночные данные — обязательно назови цену руб/кг.
 7. Дай ровно одну рекомендацию по уходу на основе блока <WEATHER> (но помни, что для INDOOR ферм погода на улице не имеет значения).
 8. Если в контексте есть блок <KNOWLEDGE_BASE>, используй его для диагностики болезней и рекомендаций. Ссылайся на источник.
 9. Если пользователь пишет «да», «ок» или «продолжай», считай, что он продолжает последнюю обсуждавшуюся тему.
+10. Если тариф электроэнергии использован дефолтный (5 руб/кВт·ч), обязательно укажи это в ответе и попроси пользователя сохранить реальный тариф в настройках для точного расчёта.
+11. Если пользователь спросил "что посадить" или "с чего начать" — дай конкретную рекомендацию с расчётом прибыли, не ограничивайся общими словами.
 
 Структура ответа:
-1. Короткий вывод в 1-2 предложениях.
-2. Факты из <CALCULATED_ECONOMICS> или текущий статус фермы.
-3. Рекомендация по уходу или климату.
-4. Один уточняющий вопрос (если нужен).
+1. Короткий вывод: что рекомендуешь и почему (цикл, цена, маржа).
+2. Финансовый расчёт: расходы, урожай, выручка, прибыль — все цифры из контекста.
+3. Рыночная ситуация: текущая цена руб/кг, откуда данные (если есть).
+4. Один практический совет по уходу или старту.
+5. Один уточняющий вопрос (только если реально не хватает данных для расчёта).
 """.strip()
 
 
@@ -356,7 +360,13 @@ def extract_user_intent(user_message: str) -> dict[str, str | float | None]:
     }
 
 
-def _extract_energy_price(user_message: str, farm_profile: dict[str, Any]) -> float | None:
+def _extract_energy_price(user_message: str, farm_profile: dict[str, Any]) -> float:
+    """
+    Возвращает тариф электроэнергии. Никогда не возвращает None:
+    - Сначала ищет в тексте сообщения
+    - Затем берёт из профиля фермы
+    - Если профиль пустой — возвращает DEFAULT_ENERGY_PRICE_KWH с пометкой
+    """
     normalized_message = _normalize_text(user_message)
     patterns = (
         r"тариф[^0-9]{0,20}(?P<value>\d+(?:[.,]\d+)?)",
@@ -371,8 +381,12 @@ def _extract_energy_price(user_message: str, farm_profile: dict[str, Any]) -> fl
         if value and 0 < value <= 100:
             return value
 
-    fallback = float((farm_profile or {}).get("energy_price_kwh", 0.0) or 0.0)
-    return fallback if fallback > 0 else None
+    profile_price = float((farm_profile or {}).get("energy_price_kwh", 0.0) or 0.0)
+    if profile_price > 0:
+        return profile_price
+
+    # Используем дефолт — расчёт всё равно покажем
+    return DEFAULT_ENERGY_PRICE_KWH
 
 
 def _get_market_snapshot(culture: str, region: str) -> tuple[dict[str, Any] | None, str]:
@@ -417,7 +431,8 @@ def _build_exact_match_context(
     culture: str,
     area_sqm: float,
     region: str,
-    energy_price_kwh: float | None,
+    energy_price_kwh: float,
+    is_default_tariff: bool,
     target_budget: float | None,
     today: datetime,
 ) -> str:
@@ -431,45 +446,54 @@ def _build_exact_match_context(
         f"Площадь: {area_sqm:.1f} м²",
     ]
 
+    if is_default_tariff:
+        lines.append(f"ВНИМАНИЕ: тариф электроэнергии не задан, используется дефолтный {energy_price_kwh:.2f} руб/кВт·ч. Попроси пользователя указать реальный тариф в настройках.")
+    else:
+        lines.append(f"Тариф электроэнергии: {energy_price_kwh:.2f} руб/кВт·ч")
+
     if target_budget:
         lines.append(f"Целевая сумма пользователя: {_format_currency(target_budget)} руб.")
 
     lines.append(_format_crop_conditions(culture, today))
 
-    if energy_price_kwh is None:
-        lines[2] = "clarification_required: yes"
-        lines.append("Финансовый расчёт не завершён: не указан тариф на электроэнергию.")
-        lines.append("</CALCULATED_ECONOMICS>")
-        return "\n".join(lines)
-
-    lines.append(f"Тариф электроэнергии: {energy_price_kwh:.2f} руб/кВт·ч")
-
-    if not snapshot or snapshot.get("avg") is None:
-        lines[2] = "clarification_required: yes"
-        lines.append("Финансовый расчёт не завершён: нет рыночной цены за последние 7 дней.")
-        lines.append("</CALCULATED_ECONOMICS>")
-        return "\n".join(lines)
+    # Считаем экономику с рыночной ценой если есть, или со средней оценочной
+    market_price = None
+    if snapshot and snapshot.get("avg") is not None:
+        market_price = float(snapshot["avg"])
+        lines.extend([
+            f"Источник цены: {price_scope}",
+            f"Средняя рыночная цена: {market_price:.2f} руб/кг",
+            f"Диапазон цены: {float(snapshot['min']):.2f}-{float(snapshot['max']):.2f} руб/кг",
+            f"Наблюдений за 7 дней: {int(snapshot['count'])}",
+        ])
+    else:
+        # Оценочная цена из справочника (средняя по рынку)
+        estimated_prices = {
+            "Базилик": 350, "Кинза": 200, "Лук зеленый": 120,
+            "Микрозелень": 500, "Мята": 400, "Петрушка": 180,
+            "Руккола": 280, "Салат": 150, "Салат айсберг": 130,
+            "Укроп": 160, "Шпинат": 220,
+        }
+        market_price = estimated_prices.get(culture, 200)
+        lines.append(f"Рыночная цена (оценочная, нет свежих данных): ~{market_price} руб/кг")
 
     economics = EconomicsCalculator.calculate_cycle_economics(
         area_sqm=area_sqm,
         energy_price_kwh=energy_price_kwh,
-        market_price_per_kg=float(snapshot["avg"]),
+        market_price_per_kg=market_price,
         culture_data=culture_data,
     )
     cycle_from, cycle_to = culture_data["cycle_days"]
     lines.extend(
         [
-            f"Источник цены: {price_scope}",
-            f"Средняя рыночная цена: {float(snapshot['avg']):.2f} руб/кг",
-            f"Диапазон цены: {float(snapshot['min']):.2f}-{float(snapshot['max']):.2f} руб/кг",
-            f"Наблюдений за 7 дней: {int(snapshot['count'])}",
             f"Длительность цикла: {cycle_from}-{cycle_to} дней",
             f"Расходы на свет: {_format_currency(economics['energy_cost'])} руб.",
-            f"Расходы на материалы: {_format_currency(economics['materials_cost'])} руб.",
+            f"Расходы на материалы (семена+питание): {_format_currency(economics['materials_cost'])} руб.",
             f"Общие расходы: {_format_currency(economics['total_expenses'])} руб.",
             f"Ожидаемый урожай: {economics['expected_yield_kg']:.1f} кг",
             f"Ожидаемая выручка: {_format_currency(economics['expected_revenue'])} руб.",
             f"Ожидаемая чистая прибыль: {_format_currency(economics['net_profit'])} руб.",
+            f"Маржинальность: {culture_data['margin_note']}",
         ]
     )
 
@@ -491,65 +515,76 @@ def _build_exact_match_context(
 def _build_profit_hunt_context(
     area_sqm: float,
     region: str,
-    energy_price_kwh: float | None,
+    energy_price_kwh: float,
+    is_default_tariff: bool,
     target_budget: float | None,
     today: datetime,
 ) -> str:
     lines = [
         "<CALCULATED_ECONOMICS>",
         "scenario: profit_hunt",
-        "clarification_required: yes",
+        "clarification_required: no",
         f"Площадь: {area_sqm:.1f} м²",
-        "Формат запроса: нужна лучшая культура по прибыли, но культура явно не указана.",
+        "Формат запроса: нужна лучшая культура по прибыли.",
     ]
+
+    if is_default_tariff:
+        lines.append(f"ВНИМАНИЕ: тариф дефолтный {energy_price_kwh:.2f} руб/кВт·ч. Попроси указать реальный тариф.")
+    else:
+        lines.append(f"Тариф электроэнергии: {energy_price_kwh:.2f} руб/кВт·ч")
 
     if target_budget:
         lines.append(f"Целевая сумма пользователя: {_format_currency(target_budget)} руб.")
 
-    if energy_price_kwh is None:
-        lines.append("Финансовое ранжирование недоступно: не указан тариф на электроэнергию.")
-        lines.append("</CALCULATED_ECONOMICS>")
-        return "\n".join(lines)
-
-    lines.append(f"Тариф электроэнергии: {energy_price_kwh:.2f} руб/кВт·ч")
+    # Оценочные цены для расчёта без InfluxDB
+    estimated_prices = {
+        "Базилик": 350, "Кинза": 200, "Лук зеленый": 120,
+        "Микрозелень": 500, "Мята": 400, "Петрушка": 180,
+        "Руккола": 280, "Салат": 150, "Салат айсберг": 130,
+        "Укроп": 160, "Шпинат": 220,
+    }
 
     scored_cultures: list[dict[str, Any]] = []
     for culture, culture_data in AGRO_HANDBOOK.items():
         snapshot, price_scope = _get_market_snapshot(culture, region)
-        if not snapshot or snapshot.get("avg") is None:
-            continue
+        if snapshot and snapshot.get("avg") is not None:
+            market_price = float(snapshot["avg"])
+            price_source = price_scope
+        else:
+            market_price = float(estimated_prices.get(culture, 200))
+            price_source = "оценочная"
 
         economics = EconomicsCalculator.calculate_cycle_economics(
             area_sqm=area_sqm,
             energy_price_kwh=energy_price_kwh,
-            market_price_per_kg=float(snapshot["avg"]),
+            market_price_per_kg=market_price,
             culture_data=culture_data,
         )
         scored_cultures.append(
             {
                 "culture": culture,
-                "price_scope": price_scope,
-                "market_avg": float(snapshot["avg"]),
+                "price_scope": price_source,
+                "market_avg": market_price,
                 "net_profit": float(economics["net_profit"]),
                 "total_expenses": float(economics["total_expenses"]),
                 "expected_revenue": float(economics["expected_revenue"]),
+                "expected_yield_kg": float(economics["expected_yield_kg"]),
                 "cycle_days": culture_data["cycle_days"],
+                "margin_note": culture_data["margin_note"],
             }
         )
 
-    if not scored_cultures:
-        lines.append("Финансовое ранжирование недоступно: в базе нет актуальных рыночных цен по культурам.")
-        lines.append("</CALCULATED_ECONOMICS>")
-        return "\n".join(lines)
-
-    top_cultures = sorted(scored_cultures, key=lambda item: item["net_profit"], reverse=True)[:2]
-    lines.append("Топ-2 культуры по ожидаемой чистой прибыли для указанной площади:")
+    top_cultures = sorted(scored_cultures, key=lambda item: item["net_profit"], reverse=True)[:3]
+    lines.append("Топ-3 культуры по ожидаемой чистой прибыли для указанной площади:")
     for index, item in enumerate(top_cultures, start=1):
         cycle_from, cycle_to = item["cycle_days"]
         lines.append(
             f"{index}. {item['culture']} — прибыль {_format_currency(item['net_profit'])} руб., "
-            f"выручка {_format_currency(item['expected_revenue'])} руб., расходы {_format_currency(item['total_expenses'])} руб., "
-            f"средняя цена {item['market_avg']:.2f} руб/кг, цикл {cycle_from}-{cycle_to} дней, источник цены {item['price_scope']}."
+            f"выручка {_format_currency(item['expected_revenue'])} руб., "
+            f"расходы {_format_currency(item['total_expenses'])} руб., "
+            f"урожай {item['expected_yield_kg']:.1f} кг, "
+            f"цена {item['market_avg']:.0f} руб/кг ({item['price_scope']}), "
+            f"цикл {cycle_from}-{cycle_to} дней, {item['margin_note']}."
         )
 
     lines.append(f"Быстрый старт для новичка: {_format_crop_conditions(EASIEST_CULTURE, today)}")
@@ -560,14 +595,16 @@ def _build_profit_hunt_context(
 def _build_beginner_context(
     intent: dict[str, str | float | None],
     target_budget: float | None,
+    area_sqm: float | None,
+    energy_price_kwh: float,
+    is_default_tariff: bool,
+    region: str,
     today: datetime,
 ) -> str:
     detected_culture = intent["culture"]
     lines = [
         "<CALCULATED_ECONOMICS>",
         "scenario: beginner",
-        "clarification_required: yes",
-        "Финансовый расчёт не выполнялся: площадь помещения не указана.",
     ]
 
     if detected_culture:
@@ -576,45 +613,46 @@ def _build_beginner_context(
     if target_budget:
         lines.append(f"Целевая сумма пользователя: {_format_currency(target_budget)} руб.")
 
-    lines.append(f"Лёгкая культура для старта: {_format_crop_conditions(EASIEST_CULTURE, today)}")
-    lines.append(f"Высокомаржинальная культура: {_format_crop_conditions(HIGH_MARGIN_CULTURE, today)}")
-    lines.append("</CALCULATED_ECONOMICS>")
-    return "\n".join(lines)
+    if is_default_tariff:
+        lines.append(f"ВНИМАНИЕ: тариф дефолтный {energy_price_kwh:.2f} руб/кВт·ч.")
 
-
-def _build_missing_tariff_context(
-    intent: dict[str, str | float | None],
-    target_budget: float | None,
-    today: datetime,
-) -> str:
-    culture = intent["culture"]
-    area_sqm = intent["area_sqm"]
-    lines = [
-        "<CALCULATED_ECONOMICS>",
-        "scenario: missing_tariff",
-        "clarification_required: yes",
-    ]
-
-    if culture:
-        lines.append(f"Культура: {culture}")
-        lines.append(_format_crop_conditions(culture, today))
+    # Если площадь неизвестна — показываем расчёт на 10м² как пример
+    calc_area = area_sqm if area_sqm else 10.0
+    if not area_sqm:
+        lines.append(f"Площадь не указана — показываю пример расчёта на {calc_area:.0f} м².")
+        lines.append("clarification_needed: площадь помещения")
     else:
-        lines.append("Культура не определена явно.")
-        lines.append(f"Лёгкая культура для старта: {_format_crop_conditions(EASIEST_CULTURE, today)}")
-        lines.append(f"Высокомаржинальная культура: {_format_crop_conditions(HIGH_MARGIN_CULTURE, today)}")
+        lines.append(f"Площадь: {calc_area:.1f} м²")
 
-    if area_sqm:
-        lines.append(f"Площадь: {float(area_sqm):.1f} м²")
+    estimated_prices = {
+        "Базилик": 350, "Кинза": 200, "Лук зеленый": 120,
+        "Микрозелень": 500, "Мята": 400, "Петрушка": 180,
+        "Руккола": 280, "Салат": 150, "Салат айсберг": 130,
+        "Укроп": 160, "Шпинат": 220,
+    }
 
-    if target_budget:
-        lines.append(f"Целевая сумма пользователя: {_format_currency(target_budget)} руб.")
+    # Считаем для двух культур: лёгкой и высокомаржинальной
+    for cult_name in [EASIEST_CULTURE, HIGH_MARGIN_CULTURE]:
+        cult_data = AGRO_HANDBOOK[cult_name]
+        snapshot, price_scope = _get_market_snapshot(cult_name, region)
+        market_price = float(snapshot["avg"]) if (snapshot and snapshot.get("avg")) else float(estimated_prices.get(cult_name, 200))
+        price_label = price_scope if (snapshot and snapshot.get("avg")) else "оценочная"
+        economics = EconomicsCalculator.calculate_cycle_economics(
+            area_sqm=calc_area,
+            energy_price_kwh=energy_price_kwh,
+            market_price_per_kg=market_price,
+            culture_data=cult_data,
+        )
+        cycle_from, cycle_to = cult_data["cycle_days"]
+        lines.append(
+            f"{cult_name}: цикл {cycle_from}-{cycle_to} дней, "
+            f"цена {market_price:.0f} руб/кг ({price_label}), "
+            f"урожай {economics['expected_yield_kg']:.1f} кг, "
+            f"расходы {_format_currency(economics['total_expenses'])} руб., "
+            f"прибыль {_format_currency(economics['net_profit'])} руб. "
+            f"({cult_data['margin_note']})"
+        )
 
-    lines.append(
-        "Внимание: Тариф на электроэнергию неизвестен (равен 0). Финансовый расчет невозможен. "
-        "Объясни пользователю базовые характеристики культуры (цикл, климат) и ОБЯЗАТЕЛЬНО попроси его "
-        "ввести свой тариф в панели настроек дашборда ('Тариф электроэнергии') и сохранить профиль для "
-        "получения точного бизнес-плана."
-    )
     lines.append("</CALCULATED_ECONOMICS>")
     return "\n".join(lines)
 
@@ -622,7 +660,8 @@ def _build_missing_tariff_context(
 def build_economics_context(
     intent: dict[str, str | float | None],
     region: str,
-    energy_price_kwh: float | None,
+    energy_price_kwh: float,
+    is_default_tariff: bool,
 ) -> str:
     today = datetime.now()
     culture = intent["culture"]
@@ -630,19 +669,13 @@ def build_economics_context(
     target_budget = intent["target_budget"]
     normalized_target_budget = float(target_budget) if target_budget else None
 
-    if area_sqm and (energy_price_kwh is None or energy_price_kwh <= 0):
-        return _build_missing_tariff_context(
-            intent=intent,
-            target_budget=normalized_target_budget,
-            today=today,
-        )
-
     if culture and area_sqm:
         return _build_exact_match_context(
             culture=culture,
             area_sqm=float(area_sqm),
             region=region,
             energy_price_kwh=energy_price_kwh,
+            is_default_tariff=is_default_tariff,
             target_budget=normalized_target_budget,
             today=today,
         )
@@ -652,6 +685,7 @@ def build_economics_context(
             area_sqm=float(area_sqm),
             region=region,
             energy_price_kwh=energy_price_kwh,
+            is_default_tariff=is_default_tariff,
             target_budget=normalized_target_budget,
             today=today,
         )
@@ -659,6 +693,10 @@ def build_economics_context(
     return _build_beginner_context(
         intent=intent,
         target_budget=normalized_target_budget,
+        area_sqm=float(area_sqm) if area_sqm else None,
+        energy_price_kwh=energy_price_kwh,
+        is_default_tariff=is_default_tariff,
+        region=region,
         today=today,
     )
 
@@ -737,21 +775,16 @@ def chat_with_ai(
     )
 
     intent = extract_user_intent(effective_message)
-    intent.setdefault("area", intent.get("area_sqm"))
-    intent.setdefault("budget", intent.get("target_budget"))
 
-    if intent["area"] is None:
-        intent["area"] = farm_profile.get("area_sqm")
-    if intent["area"] is None:
-        intent["area"] = farm_profile.get("total_area_sqm")
+    # Подтягиваем площадь из профиля если не распознали из сообщения
+    if intent["area_sqm"] is None:
+        profile_area = float(farm_profile.get("total_area_sqm") or farm_profile.get("area_sqm") or 0.0)
+        if profile_area > 0:
+            intent["area_sqm"] = profile_area
 
-    if intent["budget"] is None:
-        intent["budget"] = farm_profile.get("budget")
-
-    if intent.get("area_sqm") is None:
-        intent["area_sqm"] = intent["area"]
-    if intent.get("target_budget") is None:
-        intent["target_budget"] = intent["budget"]
+    # Подтягиваем бюджет из профиля если не распознали
+    if intent["target_budget"] is None and farm_profile.get("budget"):
+        intent["target_budget"] = float(farm_profile["budget"])
 
     active_plant = get_active_plant()
     if active_plant is not None and intent["culture"] is None:
@@ -761,19 +794,10 @@ def chat_with_ai(
     use_rag = needs_rag_search(effective_message)
 
     economics_keywords = (
-        "прибыл",
-        "выручк",
-        "экономик",
-        "бизнес",
-        "окуп",
-        "маржин",
-        "доход",
-        "заработ",
-        "рентабель",
-        "цена",
-        "бюджет",
-        "тариф",
-        "бизнес-план",
+        "прибыл", "выручк", "экономик", "бизнес", "окуп", "маржин", "доход",
+        "заработ", "рентабель", "цена", "бюджет", "тариф", "бизнес-план",
+        "посадить", "посеять", "что лучше", "что выгоднее", "с чего начать",
+        "сколько", "площад",
     )
     requires_economics = bool(
         intent.get("area_sqm")
@@ -784,12 +808,16 @@ def chat_with_ai(
     context_filter = dialogue_manager.get_context_filter(farm_profile)
     farm_type = context_filter.get("farm_type")
 
+    # Получаем тариф — теперь всегда возвращает число (дефолт если не задан)
+    energy_price_kwh = _extract_energy_price(effective_message, farm_profile)
+    profile_price = float(farm_profile.get("energy_price_kwh") or 0.0)
+    is_default_tariff = profile_price <= 0 and energy_price_kwh == DEFAULT_ENERGY_PRICE_KWH
+
     economics_block = (
         "<CALCULATED_ECONOMICS>Финансовый контекст в этом запросе не запрашивался.</CALCULATED_ECONOMICS>"
     )
     if requires_economics:
-        energy_price_kwh = _extract_energy_price(effective_message, farm_profile)
-        economics_block = build_economics_context(intent, region, energy_price_kwh)
+        economics_block = build_economics_context(intent, region, energy_price_kwh, is_default_tariff)
 
     rag_block = ""
     if use_rag:
@@ -838,7 +866,7 @@ def chat_with_ai(
     elif active_plant or intent.get("culture"):
         current_topic = "cultivation"
 
-    awaiting_confirmation = "clarification_required: yes" in economics_block
+    awaiting_confirmation = False  # больше не блокируем расчёт
 
     messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for item in history[-4:]:
@@ -895,78 +923,4 @@ def chat_with_ai(
             awaiting_confirmation=awaiting_confirmation,
             farm_type=farm_type,
         )
-        return f"Ошибка разбора ответа Ollama: {exc}"
-
-    region = _normalize_region(user_region)
-    intent = extract_user_intent(user_message)
-    active_plant = get_active_plant()
-    if active_plant is not None and intent["culture"] is None:
-        intent["culture"] = active_plant["culture_name"]
-
-    energy_price_kwh = _extract_energy_price(user_message, farm_profile)
-    economics_block = build_economics_context(intent, region, energy_price_kwh)
-    weather_block = get_weather_context(region) or WEATHER_ERROR_TEXT
-    farm_state_block = _build_farm_state_block(active_plant) + "\n"
-
-    rag_block = ""
-    if needs_rag_search(user_message):
-        rag_query = user_message
-        if intent.get("culture"):
-            rag_query = f"{intent['culture']}: {user_message}"
-        elif active_plant:
-            rag_query = f"{active_plant['culture_name']}: {user_message}"
-        rag_chunks = search_knowledge_base(rag_query, top_k=3)
-        rag_block = format_rag_context(rag_chunks)
-
-    user_prompt = (
-        f"<CONTEXT>\n"
-        f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Регион: {region}\n"
-        f"<WEATHER>{weather_block}</WEATHER>\n"
-        f"{farm_state_block}"
-        f"{rag_block}\n"
-        f"{economics_block}\n"
-        f"</CONTEXT>\n\n"
-        f"<QUESTION>{user_message}</QUESTION>"
-    )
-
-    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for item in history[-4:]:
-        role = str(item.get("role", "")).strip()
-        content = str(item.get("content", "")).strip()
-        if role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_prompt})
-
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "messages": messages,
-                "stream": False,
-                "keep_alive": "1h",
-                "options": {
-                    "temperature": 0.2,
-                    "top_p": 0.85,
-                    "repeat_penalty": 1.1,
-                    "num_ctx": 4096,
-                    "num_gpu": 99,
-                    "num_predict": 2048,
-                },
-                "stop": ["<|im_end|>", "<|im_start|>", "<|endoftext|>", "</s>"],
-            },
-            timeout=None,
-        )
-        response.raise_for_status()
-        content = response.json().get("message", {}).get("content") or ""
-
-        print(f"RAW OLLAMA RESPONSE: {content}")
-
-        if "<think>" in content:
-            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-
-        return content or "Модель не вернула ответ."
-    except requests.exceptions.RequestException as exc:
-        return f"Ошибка соединения с Ollama: {exc}"
-    except ValueError as exc:
         return f"Ошибка разбора ответа Ollama: {exc}"
